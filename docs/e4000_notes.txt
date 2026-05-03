@@ -1,0 +1,61 @@
+E4000 Technical Notes
+======================
+Compiled from public sources (Elonics datasheet, kernel driver, community work).
+
+Chip: Elonics E4000 
+Role: Wideband TV tuner, excellent SDR frontend
+Frequency range: 52 - 2200 MHz (with gap at ~1100-1250 MHz)
+I2C address: 0xC8 (8-bit write), 0xC9 (8-bit read)
+Status: DISCONTINUED (Elonics went bankrupt ~2012)
+
+Key Characteristics:
+  - Widest frequency range of RTL-SDR compatible tuners
+  - Gap around 1100-1250 MHz (LO leakage / VCO dead zone)
+  - Excellent sensitivity and gain range
+  - No longer manufactured (dongles with E4000 are collector items)
+
+IF Output: 
+  Supports both Low-IF and Zero-IF modes
+  IF frequency: typically 0 Hz (zero-IF) for SDR use
+
+Register Space: ~40+ registers
+
+Key Registers:
+  R00: Chip ID (should read 0x40 for E4000)
+  R01: master control
+  R02-R04: synth integer/fractional
+  R05-R06: synth config
+  R07-R09: LO divider
+  R0A-R0D: filter bandwidth
+  R0E-R11: DC offset calibration
+  R14-R17: gain control (LNA, mixer, IF stages)
+  R1A: AGC settings
+
+Gain Stages:
+  LNA: ~30 dB range (multiple steps)
+  Mixer: ~12 dB 
+  IF stage 1: ~9 dB
+  IF stage 2-6: ~3 dB each
+  Total: ~50+ dB gain range
+
+PLL:
+  Fractional-N synthesizer
+  Three VCO sub-bands covering full range
+  
+Frequency Gap:
+  ~1100-1250 MHz: VCO cannot lock reliably
+  Practical for: 52-1100 MHz and 1250-2200 MHz
+
+Bandwidth Control:
+  Adjustable IF filter from ~150 kHz to ~8 MHz
+  More flexible than R820T
+
+DC Offset Calibration:
+  Has built-in DC offset DAC for zero-IF correction
+  Important for direct conversion architecture
+
+Notes:
+  - Historically the first tuner used for RTL-SDR
+  - Replaced by R820T which is cheaper and covers the frequency gap
+  - Some applications still prefer E4000 for its wider upper range (>1.7 GHz)
+  - No longer manufactured; dongles with E4000 are increasingly rare

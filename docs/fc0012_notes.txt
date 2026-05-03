@@ -1,0 +1,50 @@
+FC0012 Technical Notes
+=======================
+Compiled from public sources (kernel driver, community RE work).
+
+Chip: Fitipower FC0012
+Role: Low-cost TV tuner, limited SDR use
+Frequency range: 22 - 948.6 MHz
+I2C address: 0xC6 (8-bit write), 0xC7 (8-bit read)
+VCO: internal, lower performance than R820T
+
+Key Limitations for SDR:
+  - Maximum gain only ~19.2 dB (vs ~50 dB for R820T)
+  - Narrower frequency range
+  - Higher phase noise
+  - Less commonly found in modern dongles
+
+Register Space: ~22 registers
+
+Register Overview:
+  R01: RF frequency (combined with R02, R03 for PLL)
+  R05: Bandwidth selection
+  R06: Frequency offset / fine tune
+  R07: IF output / AGC
+  R08: RF input coupling
+  R13: LNA gain
+  R14: Mixer/VGA gain
+
+LNA Gain Steps (total range ~19.2 dB):
+  Index 0: -9.9 dB
+  Index 1: -7.3 dB  
+  Index 2: -5.5 dB
+  Index 3: -3.6 dB
+  Index 4: -1.5 dB
+  Index 5: 0 dB (reference)
+  Index 6: +3.3 dB
+  Index 7: +9.3 dB
+
+VCO Selection Table:
+  Frequency bands with different VCO sub-ranges
+  VCO current adjustable for stability
+
+PLL Calculation:
+  Uses integer-N synthesizer (no fractional SDM like R820T)
+  Less frequency resolution than R820T
+  
+Notes:
+  - Occasionally found in older or budget RTL-SDR dongles
+  - Software must respect the ~19.2 dB max gain (requests above will fail or clip)
+  - Marginal at 868 MHz (near band edge): prefer R820T for UHF applications
+  - Acceptable for lower UHF and VHF reception (DVB-T band III/IV)

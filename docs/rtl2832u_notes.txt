@@ -1,0 +1,83 @@
+RTL2832U Technical Notes
+========================
+Compiled from public sources, datasheets, osmocom wiki, kernel drivers.
+
+Chip: Realtek RTL2832U
+Role: DVB-T demodulator + USB interface, repurposed as SDR via bulk mode
+Crystal: 28.8 MHz (standard)
+ADC: 8-bit, up to 3.2 MSPS (practical max ~2.88 MSPS for reliable streaming)
+USB: High-speed (480 Mbit/s), bulk transfers
+I2C master: Controls attached tuner chip
+
+USB Vendor/Product IDs (common):
+  0x0bda:0x2832  - Generic RTL2832U
+  0x0bda:0x2838  - RTL2838UHIDIR (common on RTL-SDR Blog V3)
+
+Key Register Blocks (base addresses):
+  0x0000-0x00FF  DEMOD block (USB control via vendor request)
+  0x0100-0x01FF  USB block
+  0x0200-0x02FF  SYS block (system control)
+  0x0300-0x03FF  I2C repeater / tuner gateway
+
+Control Transfers:
+  bmRequestType: 0x40 (vendor, host-to-device)
+  bRequest: custom (0=read, 1=write typically)
+  wValue: register address
+  wIndex: block index
+
+USB Bulk Transfer (SDR mode):
+  Endpoint: 0x81 (bulk IN)
+  Format: interleaved I/Q, unsigned 8-bit (offset binary, center=128)
+  Packet size: 512 bytes (USB HS)
+  Recommended buffer: 16 x 32768 bytes
+
+Register Map - SYS Block (0x0200):
+  0x2000: DEMOD_CTL  - demod control
+  0x2001: GPO        - general purpose output
+  0x2002: GPI        - general purpose input
+  0x2008: SYS_FUNC   - system function enable
+  0x200C: EPA_CTL    - endpoint A control (bulk streaming)
+  
+Register Map - DEMOD Block (0x0000):
+  0x0019: PAGE_REG   - register page select
+  0x001C: BUF_CTL    - buffer control
+  0x0061: IR_SUSPEND - suspend control
+
+Register Map - USB Block (0x0100):
+  0x0100: SYSCTL     - USB system control
+  0x0103: EPA_MAXPKT - endpoint A max packet size
+  0x0104: EPA_CTL    - endpoint A control
+  0x0108: EPA_FIFO   - endpoint A FIFO config
+
+I2C Interface:
+  Tuner accessed via I2C repeater in RTL2832U
+  I2C speed: ~100-400 kHz
+  R820T I2C address: 0x1A (7-bit: 0x0D, 8-bit write: 0x1A, read: 0x1B)
+  
+SDR Mode Initialization Sequence:
+  1. USB reset / power on
+  2. Set demod mode (not DVB-T processing)
+  3. Enable I2C repeater
+  4. Initialize tuner via I2C
+  5. Set sample rate via RTL2832U registers
+  6. Set IF frequency (tuner offset from center)
+  7. Enable bulk streaming endpoint
+  8. Start USB bulk transfers
+
+Sample Rate Configuration:
+  Register: RSAMP_RATIO (2 bytes)
+  Formula: ratio = (crystal_freq * 2^22) / desired_sample_rate
+  Common values:
+    2.4 MSPS: ratio = 0x00300000 (approx)
+    1.6 MSPS: ratio = 0x00480000 (approx)
+    3.2 MSPS: ratio = 0x00240000 (approx)
+
+RTL2832U GPIO:
+  GPIO0: usually unused
+  GPIO5: controls I2C gate to tuner on some boards
+
+Notes on SDR mode (mode 2):
+  - Normal demod processing bypassed
+  - Raw ADC samples streamed over USB bulk
+  - Tuner provides IF output at 3.57 MHz (default) or zero-IF
+  - RTL2832U downconverts IF digitally, outputs baseband I/Q

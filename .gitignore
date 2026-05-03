@@ -1,0 +1,32 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.so.*
+
+# Test and example binaries
+sdrgg_test
+sdrgg_fulltest
+examples/enumerate_devices
+examples/read_sync_capture
+examples/stream_capture
+examples/save_iq_u8
+examples/register_access
+examples/gain_control
+examples/show_capabilities
+examples/chip_aware_device
+
+# Captured data
+*.bin
+*.iq
+*.raw
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

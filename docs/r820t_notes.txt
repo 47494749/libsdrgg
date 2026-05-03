@@ -1,0 +1,193 @@
+R820T / R820T2 Technical Notes
+================================
+Compiled from public sources (Linux kernel driver, community RE work).
+
+Chip: Rafael Micro R820T / R820T2
+Role: Silicon TV tuner (wideband), used as SDR RF frontend
+Frequency range: 24 MHz - 1766 MHz
+I2C address: 0x1A (8-bit write), 0x1B (8-bit read), 0x0D (7-bit)
+VCO range: 1770 - 3540 MHz (doubled internally)
+Crystal: typically 28.8 MHz (from RTL2832U)
+
+Register Space:
+  32 registers total (0x00 - 0x1F)
+  Registers 0x00-0x04: read-only status
+  Registers 0x05-0x1F: read/write configuration (27 registers)
+  
+I2C Protocol:
+  Write: START, addr_w(0x1A), reg_addr, data[0], data[1]..., STOP
+  Read:  START, addr_w(0x1A), reg_addr, RESTART, addr_r(0x1B), data[0]..., STOP
+  Read data is bit-reversed (MSB<->LSB swap per byte)
+
+Shadow Register Initial Values (0x05 to 0x1F):
+  0x83, 0x32, 0x75,            // 05 to 07
+  0xC0, 0x40, 0xD6, 0x6C,     // 08 to 0B
+  0xF5, 0x63, 0x75, 0x68,     // 0C to 0F
+  0x6C, 0x83, 0x80, 0x00,     // 10 to 13
+  0x0F, 0x00, 0xC0, 0x30,     // 14 to 17
+  0x48, 0xCC, 0x60, 0x00,     // 18 to 1B
+  0x54, 0xAE, 0x4A, 0xC0      // 1C to 1F
+
+Register Details:
+  R05 [7:5]: LNA gain mode (0=auto, 1-F=manual)
+       [4]: LNA auto mode enable
+       [3:0]: LNA gain index (0-15)
+  
+  R06 [7:6]: power detector bandwidth
+       [5]: filter gain (+3dB)
+       [4:3]: not used
+       [2:0]: cable2 input selection
+
+  R07 [7]: image rejection
+       [4]: mixer auto mode
+       [3:0]: mixer gain index (0-15)
+
+  R08 [5:0]: IMR gain_x (image rejection calibration)
+  R09 [5:0]: IMR phase_y (image rejection calibration)
+
+  R0A [6:5]: filter current
+       [4]: filter Q (low Q mode)
+       [3:0]: filter calibration code
+
+  R0B [7:4]: HP corner frequency
+       [3:0]: filter calibration trigger
+
+  R0C [7]: VGA mode (0=auto via ADC, 1=manual)
+       [4]: ADC enable
+       [3:0]: VGA gain code (0-15, ~3.5dB/step)
+       Combined: gain = code * 3.5 dB approx
+       
+  R0D [7:4]: LNA VTH (voltage threshold high)
+       [3:0]: LNA VTL (voltage threshold low)
+       
+  R0E [7:4]: Mixer VTH
+       [3:0]: Mixer VTL
+
+  R0F [7]: filter extension widest
+       [3]: ring power
+       [2]: filter calibration clock
+       [0]: GPIO output
+
+  R10 [7:5]: divider number (PLL)
+       [4]: reference divider /2
+       [3:2]: crystal cap selection
+       [1:0]: crystal loading capacitor
+
+  R11 [7:5]: CP current
+       [4:3]: divider buffer current
+
+  R12 [7:5]: VCO current (power)
+       [3]: sigma-delta modulator power
+
+  R13 [6]: PLL autotune
+       [5:0]: version number
+
+  R14 [7:6]: sigma-delta integrator (SI)
+       [5:0]: divider integer (NI)
+
+  R15 [7:0]: SDM LSB (sigma-delta fractional)
+  R16 [7:0]: SDM MSB
+
+  R17 [7:6]: open drain control
+       [5:4]: divider buffer current
+       [3]: RF input open drain
+       [2:0]: not defined
+
+  R18 [7:5]: ring parameters
+       [4]: ring_se23
+       [3:0]: n_ring
+
+  R19 [7:2]: not defined
+       [1:0]: ring_seldiv
+
+  R1A [7:6]: RF mux poly
+       [5:4]: AGC clock
+       [3:2]: PLL autotune
+       [1:0]: RF mux selection
+
+  R1B [7:0]: TF band (tracking filter)
+
+  R1C [7:3]: mixer top
+       [2]: discharge mode
+       [1]: ring PLL input
+       [0]: not defined
+
+  R1D [7:6]: detect BW
+       [5:3]: LNA top
+       [2:0]: predetect top
+
+  R1E [7:5]: ext enable / LNA discharge
+       [4:0]: LNA discharge current
+
+  R1F [7]: loop-through attenuation
+       [6:2]: not defined
+       [1:0]: ring_att (pw_ring)
+
+PLL Calculation:
+  pll_ref = crystal / 1000 (kHz)
+  freq = target_frequency / 1000 (kHz)
+  
+  Find mix_div (2,4,8,16,32,64) so that:
+    freq * mix_div >= 1770000 kHz (VCO min)
+    freq * mix_div <  3540000 kHz (VCO max)
+  
+  div_num = log2(mix_div) - 1  (written to R10[7:5])
+  
+  vco_freq = freq * mix_div
+  nint = vco_freq / (2 * pll_ref)
+  vco_fra = vco_freq - 2 * pll_ref * nint
+  
+  ni = (nint - 13) / 4
+  si = nint - 4*ni - 13
+  R14 = ni | (si << 6)
+  
+  SDM (fractional):
+    Iterative division of vco_fra to get 16-bit fractional word
+    Written to R15 (LSB) and R16 (MSB)
+  
+  PLL lock check: read R02, bit 6 = PLL locked
+
+Gain Tables (LNA steps, measured at 928 MHz):
+  LNA: 0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13 (0.1 dB)
+  Mixer: 0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8 (0.1 dB)
+  VGA: approximately 3.5 dB per step, 16 steps
+
+  Total gain range: approximately 0 to 50 dB
+
+Signal Strength Reading:
+  Read R03: bits [7:4] = LNA gain index, bit [3] = mixer gain MSB
+  Can estimate input power from gain state
+
+Frequency Range Table (RF MUX settings per band):
+  0-50 MHz:    open_d=low, rf_mux=LPF, tf_c=0xDF
+  50-55 MHz:   open_d=low, rf_mux=LPF, tf_c=0xBE
+  55-60 MHz:   open_d=low, rf_mux=LPF, tf_c=0x8B
+  60-65 MHz:   open_d=low, rf_mux=LPF, tf_c=0x7B
+  65-70 MHz:   open_d=low, rf_mux=LPF, tf_c=0x69
+  70-75 MHz:   open_d=low, rf_mux=LPF, tf_c=0x58
+  75-80 MHz:   open_d=high, rf_mux=LPF, tf_c=0x44
+  80-90 MHz:   open_d=high, rf_mux=LPF, tf_c=0x44
+  90-100 MHz:  open_d=high, rf_mux=LPF, tf_c=0x34
+  100-110 MHz: open_d=high, rf_mux=LPF, tf_c=0x34
+  110-120 MHz: open_d=high, rf_mux=LPF, tf_c=0x24
+  120-140 MHz: open_d=high, rf_mux=LPF, tf_c=0x24
+  140-180 MHz: open_d=high, rf_mux=LPF, tf_c=0x14
+  180-220 MHz: open_d=high, rf_mux=LPF, tf_c=0x13
+  220-250 MHz: open_d=high, rf_mux=LPF, tf_c=0x13
+  250-280 MHz: open_d=high, rf_mux=LPF, tf_c=0x11
+  280-310 MHz: open_d=high, rf_mux=LPF, tf_c=0x00
+  310-450 MHz: open_d=high, rf_mux=bypass/mid, tf_c=0x00
+  450-588 MHz: open_d=high, rf_mux=bypass/mid, tf_c=0x00
+  588-650 MHz: open_d=high, rf_mux=bypass/highest, tf_c=0x00
+  650+ MHz:    open_d=high, rf_mux=bypass/highest, tf_c=0x00
+
+Standby Sequence:
+  R06=0xB1, R05=0x03, R07=0x3A, R08=0x40, R09=0xC0
+  R0A=0x36, R0C=0x35, R0F=0x68, R11=0x03, R17=0xF4, R19=0x0C
+
+Differences R820T vs R820T2:
+  - R820T2 has improved phase noise
+  - Slightly different VCO fine-tune behavior
+  - Same register map and I2C protocol
+  - Same I2C address
+  - Code-compatible (same initialization sequence works)
