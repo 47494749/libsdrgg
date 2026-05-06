@@ -18,6 +18,11 @@
 #ifndef SDRGG_H
 #define SDRGG_H
 
+/* ---- Library version ---- */
+#define SDRGG_VERSION_MAJOR  1
+#define SDRGG_VERSION_MINOR  1
+#define SDRGG_VERSION_PATCH  0
+
 #include <stdint.h>
 #include <stdbool.h>
 

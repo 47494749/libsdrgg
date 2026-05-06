@@ -72,23 +72,35 @@ int32_t usb::control_read( sdrgg_dev_t *dev, uint16_t value, uint16_t index, uin
 /* ---- Synchronous bulk (used only by read_sync path) ---- */
 
 int32_t usb::bulk_read( sdrgg_dev_t *dev, uint8_t *buf, uint32_t len, uint32_t timeout_ms, uint32_t *actual ) {
-  struct usbdevfs_bulktransfer bulk = {
-    .ep = SDRGG_USB_EPA,
-    .len = len,
-    .timeout = timeout_ms,
-    .data = buf,
-  };
+  /* USBDEVFS_BULK ioctl limits per-transfer size to 16384 bytes.
+   * Fragment larger reads into a loop of max-size chunks. */
+  static const uint32_t MAX_CHUNK = 16384;
+  uint32_t total = 0;
 
-  int32_t rc = ioctl( dev->identity.fd, USBDEVFS_BULK, &bulk );
-  if( rc < 0 ) {
-    if( actual ) {
-      *actual = 0;
+  while( total < len ) {
+    uint32_t chunk = len - total;
+    if( chunk > MAX_CHUNK ) chunk = MAX_CHUNK;
+
+    struct usbdevfs_bulktransfer bulk = {
+      .ep = SDRGG_USB_EPA,
+      .len = chunk,
+      .timeout = timeout_ms,
+      .data = buf + total,
+    };
+
+    int32_t rc = ioctl( dev->identity.fd, USBDEVFS_BULK, &bulk );
+    if( rc < 0 ) {
+      /* If we already got some data, return what we have */
+      if( total > 0 ) break;
+      if( actual ) *actual = 0;
+      return SDRGG_ERR_IO;
     }
-    return SDRGG_ERR_IO;
+    total += (uint32_t)rc;
+    /* Short read: device has no more data ready */
+    if( (uint32_t)rc < chunk ) break;
   }
-  if( actual ) {
-    *actual = (uint32_t)rc;
-  }
+
+  if( actual ) *actual = total;
   return SDRGG_OK;
 }
 
