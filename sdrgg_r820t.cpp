@@ -97,7 +97,7 @@ static const regmap_contribution supply_defaults[] = {
 
 /* Contributor: IF processing and detection thresholds */
 static const regmap_contribution if_chain_defaults[] = {
-  { addr::IF_STAGE,      0xF5 },   /* VGA mid-gain, IF path enabled */
+  { addr::IF_STAGE,      0xE5 },   /* VGA mid-gain, IF AGC mode */
   { addr::LNA_THRESHOLD, 0x63 },   /* LNA AGC: mid-sensitivity trigger */
   { addr::MIX_THRESHOLD, 0x75 },   /* Mixer AGC: nominal trigger */
   { addr::CLK_ROUTING,   0x68 },   /* Clock: internal routing only */
@@ -606,9 +606,8 @@ const gain_profile *select_gain_profile( int32_t target_tenth_db ) {
   remaining -= mixer_cum[mix_idx];
   if( remaining < 0 ) remaining = 0;
 
-  /* Rest goes to VGA (~3.5 dB per step) */
-  vga_idx = remaining / 35;
-  if( vga_idx > 15 ) vga_idx = 15;
+  /* VGA always max for adequate ADC level (LNA+Mixer control RF gain) */
+  vga_idx = 15;
 
   greedy_result.lna_index = (uint8_t)lna_idx;
   greedy_result.mixer_index = (uint8_t)mix_idx;
@@ -628,7 +627,7 @@ static const stage_descriptor mixer_stage = {
 };
 
 static const stage_descriptor vga_stage = {
-  16, addr::IF_STAGE, 0x10, 0x1F
+  16, addr::IF_STAGE, 0x00, 0x0F
 };
 
 /* ======================================================================
@@ -859,6 +858,10 @@ int32_t set_vga_gain( sdrgg_dev_t *dev, int32_t index ) {
   if( index > 15 ) index = 15;
   stage_assignment sa;
   sa.control_reg = vga_stage.control_reg;
+  /* Bit 4 = 1 selects manual VGA mode.  The R820T VGA AGC (bit4=0)
+   * does not work well for pulsed signals like ADS-B because it
+   * settles to a gain level appropriate for the noise floor, dropping
+   * brief signal pulses below the demodulator threshold. */
   sa.composed_bits = (uint8_t)( 0x10 | index );
   sa.affected_mask = 0x1F;
   return apply_assignment( dev, &sa );

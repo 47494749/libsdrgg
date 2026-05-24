@@ -662,7 +662,7 @@ int32_t rtl::configure_r820t( sdrgg_dev_t *dev ) {
     return rc;
   }
 
-  /* Program IF center frequency */
+  /* Program NCO for R820T Low-IF (3.57 MHz) */
   rc = rtl::set_if_freq( dev, SDRGG_R820T_IF_FREQ );
   if( rc != SDRGG_OK ) {
     return rc;
@@ -720,6 +720,17 @@ int32_t rtl::set_sample_rate( sdrgg_dev_t *dev, uint32_t rate_hz ) {
     return rc;
   }
   rc = submit_demod_write( dev, 1, 0x01, 0x10, 1 );
+  if( rc != SDRGG_OK ) {
+    return rc;
+  }
+
+  /* Re-program IF NCO after DDC reset.
+   * The soft reset clears the NCO phase accumulator (regs 0x19-0x1B),
+   * so the R820T IF signal (3.57 MHz) is no longer downconverted to
+   * baseband.  Re-program it from the stored offset. */
+  if( dev->tuning.if_offset_hz > 0 ) {
+    rc = rtl::set_if_freq( dev, dev->tuning.if_offset_hz );
+  }
 
   return rc;
 }

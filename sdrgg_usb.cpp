@@ -322,7 +322,7 @@ static void process_device_urbs( sdrgg_dev_t *dev ) {
     }
 
     if( u->urb.status == 0 && u->urb.actual_length > 0 ) {
-      /* Deliver buffer to user â€” data pointer is the DMA buffer itself,
+      /* Deliver buffer to user — data pointer is the DMA buffer itself,
       * no memcpy needed (zero-copy) */
       sdrgg_buffer_t desc = {
         .data = u->buffer,
@@ -333,6 +333,13 @@ static void process_device_urbs( sdrgg_dev_t *dev ) {
 
       if( dev->stream.callback ) {
         dev->stream.callback( dev, &desc, dev->stream.user_data );
+      }
+    } else {
+      /* URB completed with error or zero length */
+      if( dev->pipeline.dropped <= 3 ) {
+        fprintf( stderr, "sdrgg-urb-diag: slot=%d status=%d actual=%d dropped=%u\n",
+                 dev->identity.slot_index, u->urb.status,
+                 u->urb.actual_length, dev->pipeline.dropped );
       }
     }
 

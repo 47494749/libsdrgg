@@ -557,6 +557,44 @@ int32_t start_stream( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_str
     return rc;
   }
 
+  /* === Pre-stream register readback diagnostic === */
+  {
+    uint8_t rb[12];
+    const char *tname = (dev->identity.tuner_class == SDRGG_TUNER_R820T ||
+                         dev->identity.tuner_class == SDRGG_TUNER_R820T2) ? "R820T" : "FC0012";
+    /* Read key demod registers */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x0019, &rb[0] );  /* page0: SDR/AGC mode */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x0008, &rb[1] );  /* page0: ADC config */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x01B1, &rb[2] );  /* page1: IF mode */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x0111, &rb[3] );  /* page1: DAGC */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x0115, &rb[4] );  /* page1: spectrum */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x0119, &rb[5] );  /* page1: NCO[23:16] */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x011A, &rb[6] );  /* page1: NCO[15:8] */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x011B, &rb[7] );  /* page1: NCO[7:0] */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x019F, &rb[8] );  /* page1: resamp ratio[31:24] */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x01A0, &rb[9] );  /* page1: resamp ratio[23:16] */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x0101, &rb[10] ); /* page1: FIR/reset/i2c */
+    demod::read( dev, SDRGG_BLOCK_DEMOD, 0x0006, &rb[11] ); /* page0: ADC path */
+    fprintf( stderr, "sdrgg-regdiag[%s]: p0_19=%02X p0_08=%02X p1_B1=%02X "
+                     "p1_11=%02X p1_15=%02X NCO=%02X%02X%02X "
+                     "ratio=%02X%02X p1_01=%02X p0_06=%02X if_off=%u\n",
+             tname, rb[0], rb[1], rb[2], rb[3], rb[4],
+             rb[5], rb[6], rb[7], rb[8], rb[9], rb[10], rb[11],
+             dev->tuning.if_offset_hz );
+    /* R820T gain readback via tuner I2C */
+    if( dev->identity.tuner_class == SDRGG_TUNER_R820T ||
+        dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
+      uint8_t tr[8];
+      tuner::read( dev, 0x05, tr, 8 ); /* regs 0x05..0x0C */
+      fprintf( stderr, "sdrgg-regdiag[R820T]: lna_reg05=%02X mixer_reg07=%02X "
+                       "vga_reg0C=%02X shadow_lna=%d mixer=%d vga=%d\n",
+               tr[0], tr[2], tr[7],
+               dev->shadow.r820t_file[0x05 - SDRGG_R820T_REG_START] & 0x0F,
+               dev->shadow.r820t_file[0x07 - SDRGG_R820T_REG_START] & 0x0F,
+               dev->shadow.r820t_file[0x0C - SDRGG_R820T_REG_START] & 0x0F );
+    }
+  }
+
   /* Reset endpoint and begin data flow */
   rc = rtl::start_bulk( dev );
   if( rc != SDRGG_OK ) {

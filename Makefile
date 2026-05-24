@@ -3,7 +3,7 @@
 # Targets:
 #   make          - Build static library
 #   make shared   - Build shared library
-#   make test     - Build test utility
+#   make examples - Build example programs
 #   make clean    - Remove build artifacts
 #   make install  - Install to /usr/local
 #
@@ -17,17 +17,17 @@ LDFLAGS = -lpthread -lm
 
 PREFIX ?= /usr/local
 EXAMPLES_DIR = examples
-EXAMPLE_SRCS = $(EXAMPLES_DIR)/enumerate_devices.cpp $(EXAMPLES_DIR)/show_capabilities.cpp $(EXAMPLES_DIR)/register_access.cpp $(EXAMPLES_DIR)/stream_capture.cpp $(EXAMPLES_DIR)/read_sync_capture.cpp $(EXAMPLES_DIR)/gain_control.cpp $(EXAMPLES_DIR)/save_iq_u8.cpp $(EXAMPLES_DIR)/chip_aware_device.cpp
+EXAMPLE_SRCS = $(EXAMPLES_DIR)/enumerate_devices.cpp $(EXAMPLES_DIR)/show_capabilities.cpp $(EXAMPLES_DIR)/register_access.cpp $(EXAMPLES_DIR)/stream_capture.cpp $(EXAMPLES_DIR)/read_sync_capture.cpp $(EXAMPLES_DIR)/gain_control.cpp $(EXAMPLES_DIR)/save_iq_u8.cpp $(EXAMPLES_DIR)/chip_aware_device.cpp $(EXAMPLES_DIR)/device_reset.cpp $(EXAMPLES_DIR)/multi_device_reliability.cpp
 EXAMPLE_BINS = $(EXAMPLE_SRCS:.cpp=)
 
-SRCS = sdrgg_usb.cpp sdrgg_rtl.cpp sdrgg_r820t.cpp sdrgg_fc0012.cpp sdrgg_tuner_caps.cpp sdrgg_core.cpp
+SRCS = sdrgg_usb.cpp sdrgg_rtl.cpp sdrgg_r820t.cpp sdrgg_fc0012.cpp sdrgg_tuner_caps.cpp sdrgg_core.cpp sdrgg_reset.cpp
 OBJS = $(SRCS:.cpp=.o)
 HEADERS = sdrgg.h sdrgg_internal.h sdrgg_r820t_internal.h sdrgg_fc0012_internal.h
 
 LIB_STATIC = libsdrgg.a
 LIB_SHARED = libsdrgg.so
 
-.PHONY: all shared test fulltest examples clean install
+.PHONY: all shared examples clean install
 
 all: $(LIB_STATIC)
 
@@ -39,12 +39,6 @@ shared: $(OBJS)
 
 %.o: %.cpp $(HEADERS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-test: all sdrgg_test.cpp
-	$(CXX) $(CXXFLAGS) -o sdrgg_test sdrgg_test.cpp -L. -lsdrgg $(LDFLAGS)
-
-fulltest: all sdrgg_fulltest.cpp
-	$(CXX) $(CXXFLAGS) -o sdrgg_fulltest sdrgg_fulltest.cpp -L. -lsdrgg $(LDFLAGS)
 
 examples: all $(EXAMPLE_BINS)
 
@@ -72,8 +66,14 @@ $(EXAMPLES_DIR)/save_iq_u8: $(EXAMPLES_DIR)/save_iq_u8.cpp $(LIB_STATIC)
 $(EXAMPLES_DIR)/chip_aware_device: $(EXAMPLES_DIR)/chip_aware_device.cpp $(LIB_STATIC)
 	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lsdrgg $(LDFLAGS)
 
+$(EXAMPLES_DIR)/device_reset: $(EXAMPLES_DIR)/device_reset.cpp $(LIB_STATIC)
+	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lsdrgg $(LDFLAGS)
+
+$(EXAMPLES_DIR)/multi_device_reliability: $(EXAMPLES_DIR)/multi_device_reliability.cpp $(LIB_STATIC)
+	$(CXX) $(CXXFLAGS) -o $@ $< -L. -lsdrgg $(LDFLAGS)
+
 clean:
-	rm -f $(OBJS) $(LIB_STATIC) $(LIB_SHARED) sdrgg_test sdrgg_fulltest $(EXAMPLE_BINS)
+	rm -f $(OBJS) $(LIB_STATIC) $(LIB_SHARED) $(EXAMPLE_BINS)
 
 install: $(LIB_STATIC) $(LIB_SHARED)
 	install -d $(PREFIX)/lib $(PREFIX)/include

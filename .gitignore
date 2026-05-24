@@ -15,6 +15,7 @@ examples/register_access
 examples/gain_control
 examples/show_capabilities
 examples/chip_aware_device
+examples/multi_device_reliability
 
 # Captured data
 *.bin

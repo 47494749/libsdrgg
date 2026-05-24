@@ -20,7 +20,7 @@
 
 /* ---- Library version ---- */
 #define SDRGG_VERSION_MAJOR  1
-#define SDRGG_VERSION_MINOR  1
+#define SDRGG_VERSION_MINOR  2
 #define SDRGG_VERSION_PATCH  0
 
 #include <stdint.h>
@@ -303,6 +303,51 @@ const tuner_caps *get_caps( void );
 namespace sdr {
 const tuner_caps *get_caps_by_type( sdrgg_tuner_type_t type );
 } /* namespace sdr */
+
+/* ========== Device reset namespace ========== */
+
+/*
+ * Reset levels (from lightest to heaviest):
+ *
+ *   LEVEL 1 - reset_demod: Soft-reset the RTL2832U digital core via register
+ *             write (page 1, reg 0x01, bit 2). Resets DSP pipeline without
+ *             touching tuner or USB. Fastest recovery for DSP glitches.
+ *
+ *   LEVEL 2 - reset_tuner: Re-initialize all tuner registers from the shadow
+ *             register file. Does NOT reset the demodulator. Fixes corrupted
+ *             I2C/tuner state without USB disturbance.
+ *
+ *   LEVEL 3 - reset_usb: Issue ioctl(USBDEVFS_RESET) on the device fd.
+ *             Resets USB protocol state. Device re-enumerates but does NOT
+ *             power-cycle. After this, device must be re-opened.
+ *
+ *   LEVEL 4 - reset_power: Disable and re-enable USB port power via sysfs
+ *             authorized attribute. True cold reset equivalent to physical
+ *             unplug/replug. After this, device must be re-opened.
+ *
+ * Return: SDRGG_OK on success, or a negative SDRGG_ERR_* code.
+ */
+
+namespace reset {
+
+/* Level 1: RTL2832U demodulator soft reset (DSP pipeline only) */
+int32_t reset_demod( sdrgg_dev_t *dev );
+
+/* Level 2: Tuner register re-initialization from shadow */
+int32_t reset_tuner( sdrgg_dev_t *dev );
+
+/* Level 3: USB device reset (ioctl USBDEVFS_RESET) */
+int32_t reset_usb( sdrgg_dev_t *dev );
+
+/* Level 4: USB port power cycle via sysfs (true cold reset)
+ * usb_path: e.g. "1-1.1.1" (from devinfo.path or lsusb -t)
+ * If NULL, attempts to resolve from the open device fd. */
+int32_t reset_power( sdrgg_dev_t *dev, const char *usb_path );
+
+/* Convenience: full reset sequence (levels 1+2+3) without power cycle */
+int32_t reset_full( sdrgg_dev_t *dev );
+
+} /* namespace reset */
 
 #endif /* __cplusplus */
 

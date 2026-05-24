@@ -51,6 +51,8 @@ Generated binaries:
 - `gain_control`
 - `save_iq_u8`
 - `chip_aware_device`
+- `device_reset`
+- `multi_device_reliability`
 
 ## Runtime Notes
 
@@ -165,6 +167,54 @@ Useful for:
 - auto-configuration based on detected hardware
 - showing how capability metadata can drive runtime policy
 
+### `device_reset.cpp`
+
+Demonstrates the multi-level `reset::` API. Opens a device, configures it to a valid state, then performs the requested reset level and reports success or failure.
+
+Usage:
+
+```bash
+sudo ./examples/device_reset [level]
+```
+
+Where `level` is one of:
+
+- `1` — Level 1: demod soft reset (DSP pipeline only, sub-ms recovery)
+- `2` — Level 2: tuner shadow register writeback (fixes I2C corruption)
+- `3` — Level 3: USB device reset (device re-enumerates, fd invalid after)
+- `4` — Level 4: USB port power cycle (cold reset, requires root)
+- `full` — Levels 1+2+3 in sequence (default)
+
+Useful for:
+
+- testing device recovery procedures
+- integrating escalating reset logic into daemons
+- diagnosing whether a fault is in DSP, tuner I2C, or USB link
+- verifying power-cycle capability on specific USB host hardware
+
+### `multi_device_reliability.cpp`
+
+Enumerates all visible dongles, opens them inside one shared `sdrgg_ctx_t`, assigns each device a valid test frequency, starts all streams concurrently, and prints per-device throughput once per second. The test returns `PASS` only if every device keeps receiving callbacks for the full interval without a one-second stall and without sequence gaps.
+
+Usage:
+
+```bash
+sudo ./examples/multi_device_reliability [seconds] [sample_rate_hz]
+```
+
+Examples:
+
+```bash
+sudo ./examples/multi_device_reliability
+sudo ./examples/multi_device_reliability 20 2400000
+```
+
+Useful for:
+
+- checking driver reliability with all connected USB dongles active at once
+- reproducing suspected multi-device streaming issues
+- confirming that another process is not still holding the SDRs
+
 ## Suggested Usage Sequence
 
 If you are new to the library, a sensible order is:
@@ -181,3 +231,4 @@ If you are new to the library, a sensible order is:
 - These examples are intentionally small and explicit rather than wrapped in utility helpers.
 - They are meant to be copied, edited, and adapted for experiments.
 - Hardware access may fail if another driver or process already owns the dongle.
+- For this repository's usual deployment, stop `dump1090-gg` before running `multi_device_reliability`.

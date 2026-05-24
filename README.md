@@ -38,11 +38,12 @@ Project goals:
 - direct demod register access through `demod::*`
 - direct tuner I2C access through `tuner::*`
 - device/session lifecycle in `sdr::*`
+- multi-level device reset API through `reset::*` (demod, tuner, USB, power cycle)
 - chip-specific tuner code for R820T/R820T2 and FC0012
 - tuner capability database already prepared for FC0013, FC2580, and E4000
+- pre-stream register diagnostics (`sdrgg-regdiag`) for runtime troubleshooting
 - static and shared builds from the included `Makefile`
-- dedicated example programs for enumeration, capabilities, register access, sync capture, gain control, IQ file saving, chip-aware configuration, and streaming
-- basic and full test utilities included in-tree
+- dedicated example programs for enumeration, capabilities, register access, sync capture, gain control, IQ file saving, chip-aware configuration, streaming, device reset, and multi-device reliability testing
 
 ## Current Tuner Support
 
@@ -71,9 +72,12 @@ Internal layer split:
 - `sdrgg_core.cpp`: device lifecycle, orchestration, policy dispatch, generic API
 - `sdrgg_r820t.cpp`: R820T/R820T2 tuner logic
 - `sdrgg_fc0012.cpp`: FC0012 tuner logic
+- `sdrgg_reset.cpp`: multi-level device reset operations (demod, tuner, USB, power)
 - `sdrgg_tuner_caps.cpp`: static capability database for implemented and planned tuners
 - `sdrgg.h`: public API surface
 - `sdrgg_internal.h`: private state model and transport constants
+- `sdrgg_r820t_internal.h`: R820T-specific internal structures and register definitions
+- `sdrgg_fc0012_internal.h`: FC0012-specific internal structures and register definitions
 
 Important design choices:
 
@@ -91,6 +95,7 @@ Important design choices:
 - `sdrgg_core.cpp`: open/close/configure/stream orchestration
 - `sdrgg_r820t.cpp`: R820T/R820T2 tuning, gain and bandwidth logic
 - `sdrgg_fc0012.cpp`: FC0012 tuning and gain logic
+- `sdrgg_reset.cpp`: multi-level device reset (demod soft reset, tuner shadow writeback, USB reset, power cycle)
 - `sdrgg_tuner_caps.cpp`: capability descriptors for all tuner families modeled so far
 - `examples/enumerate_devices.cpp`: minimal device enumeration example
 - `examples/show_capabilities.cpp`: capability introspection example
@@ -100,9 +105,9 @@ Important design choices:
 - `examples/save_iq_u8.cpp`: asynchronous IQ capture saved to a raw `.u8` file
 - `examples/chip_aware_device.cpp`: device configuration driven by `get_tuner_caps()` on a real tuner
 - `examples/stream_capture.cpp`: minimal streaming example
+- `examples/device_reset.cpp`: multi-level reset demonstration with escalation logic
+- `examples/multi_device_reliability.cpp`: multi-device parallel streaming stress test
 - `examples/README.md`: guide to all example programs in this directory
-- `sdrgg_test.cpp`: basic example/test
-- `sdrgg_fulltest.cpp`: broader functional test utility
 - `docs/r820t_notes.txt`: R820T/R820T2 notes
 - `docs/fc0012_notes.txt`: FC0012 notes
 - `docs/e4000_notes.txt`: E4000 notes
@@ -137,18 +142,6 @@ Shared library:
 make shared
 ```
 
-Test utility:
-
-```bash
-make test
-```
-
-Full functional test utility:
-
-```bash
-make fulltest
-```
-
 Examples:
 
 ```bash
@@ -179,8 +172,7 @@ make CC=aarch64-linux-gnu-gcc
 - `examples/save_iq_u8`
 - `examples/chip_aware_device`
 - `examples/stream_capture`
-- `sdrgg_test`
-- `sdrgg_fulltest`
+- `examples/multi_device_reliability`
 
 ## Permissions And Runtime Notes
 
@@ -419,8 +411,6 @@ For runnable examples, see:
 - `examples/chip_aware_device.cpp`
 - `examples/stream_capture.cpp`
 - `examples/README.md`
-- `sdrgg_test.cpp`
-- `sdrgg_fulltest.cpp`
 
 ## Example Programs
 
@@ -442,6 +432,7 @@ Available examples:
 - `examples/save_iq_u8`: save a short IQ capture to a raw unsigned 8-bit interleaved file
 - `examples/chip_aware_device`: query real-device `tuner_caps` and configure the tuner accordingly
 - `examples/stream_capture`: configure one device and capture IQ buffers for a short interval
+- `examples/multi_device_reliability`: open all detected dongles in one context, stream on all of them at once, and fail if any device stalls or drops callback sequence continuity
 
 Typical usage:
 
@@ -455,6 +446,7 @@ sudo ./examples/save_iq_u8
 sudo ./examples/save_iq_u8 capture.u8 868.3 5
 sudo ./examples/chip_aware_device
 sudo ./examples/stream_capture
+sudo ./examples/multi_device_reliability
 ```
 
 ## Supported Frequency/Gain Summary
@@ -469,16 +461,16 @@ At the time of writing:
 
 ## Testing
 
-Included test binaries:
-
-- `sdrgg_test`: basic smoke test and example capture flow
-- `sdrgg_fulltest`: broader functional test of public APIs
-
-Typical invocation:
+For a concurrent multi-dongle stress check, use:
 
 ```bash
-sudo ./sdrgg_test 868.3 3
-sudo ./sdrgg_fulltest
+sudo ./examples/multi_device_reliability
+```
+
+If another application already owns the SDRs, stop it first. For example:
+
+```bash
+sudo systemctl stop dump1090-gg
 ```
 
 ## Implementation Notes
@@ -486,6 +478,24 @@ sudo ./sdrgg_fulltest
 - `R820T/R820T2` logic uses a three-stage model for RF path, PLL synthesis, and analog profile lowering
 - `FC0012` logic uses a tuning-session pipeline for multiplier derivation, PLL packing, staging, and calibration
 - capability descriptors are intentionally separate from codec implementation so user space can inspect planned tuner families before codec support lands
+
+### R820T Gain Architecture (v1.2.0)
+
+The gain allocation strategy distributes the requested total gain across three stages:
+
+1. **LNA** — assigned first, stepped through the cumulative gain table until the target is reached or exceeded
+2. **Mixer** — receives remaining gain, selecting the *highest* index whose cumulative gain fits within the remainder
+3. **VGA** — fixed at maximum (step 15) to guarantee full 8-bit ADC dynamic range. The R820T's internal VGA AGC is enabled (register 0x0C bit 4 = 0) to let the silicon auto-adjust IF amplitude.
+
+This design ensures optimal sensitivity at 1090 MHz and other weak-signal applications.
+
+### Pre-stream Diagnostics
+
+When `start_stream()` is called, the library prints a `sdrgg-regdiag` block to stderr showing key demod and tuner register values. This includes NCO frequency, resampler ratio, gain register state, and IF offset — useful for verifying the hardware path is correctly configured before data flows.
+
+### RTL2832U IF Handling
+
+The RTL2832U DDC soft reset clears the NCO phase accumulator. Since R820T uses a 3.57 MHz low-IF architecture, the library re-programs the IF NCO after every DDC reset to maintain proper baseband downconversion.
 
 ## Open Source Licensing
 
