@@ -31,6 +31,8 @@ The examples are intended to show:
 - synchronous capture using `read_sync`
 - tuner-specific gain control
 - chip-aware configuration using runtime capability queries
+- staged device reset and recovery paths
+- multi-device streaming stress checks
 - writing raw IQ data to disk
 
 ## Build

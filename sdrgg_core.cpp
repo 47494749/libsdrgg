@@ -557,6 +557,7 @@ int32_t start_stream( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_str
     return rc;
   }
 
+#if SDRGG_ENABLE_DIAGNOSTICS
   /* === Pre-stream register readback diagnostic === */
   {
     uint8_t rb[12];
@@ -594,6 +595,7 @@ int32_t start_stream( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_str
                dev->shadow.r820t_file[0x0C - SDRGG_R820T_REG_START] & 0x0F );
     }
   }
+#endif
 
   /* Reset endpoint and begin data flow */
   rc = rtl::start_bulk( dev );

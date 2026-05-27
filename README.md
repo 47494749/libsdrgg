@@ -41,7 +41,7 @@ Project goals:
 - multi-level device reset API through `reset::*` (demod, tuner, USB, power cycle)
 - chip-specific tuner code for R820T/R820T2 and FC0012
 - tuner capability database already prepared for FC0013, FC2580, and E4000
-- pre-stream register diagnostics (`sdrgg-regdiag`) for runtime troubleshooting
+- optional diagnostic stderr logging for register and URB troubleshooting when built with `SDRGG_ENABLE_DIAGNOSTICS=1`
 - static and shared builds from the included `Makefile`
 - dedicated example programs for enumeration, capabilities, register access, sync capture, gain control, IQ file saving, chip-aware configuration, streaming, device reset, and multi-device reliability testing
 
@@ -130,16 +130,16 @@ sudo apt install build-essential linux-libc-dev
 
 ## Build
 
-Static library:
+Default shared library:
 
 ```bash
 make
 ```
 
-Shared library:
+Static archive only:
 
 ```bash
-make shared
+make static
 ```
 
 Examples:
@@ -154,16 +154,25 @@ Install under `/usr/local` by default:
 sudo make install
 ```
 
+The install step publishes a versioned shared object, the usual `libsdrgg.so`
+symlink chain, the public header, and a `pkg-config` file.
+
 Cross-compile example for Raspberry Pi:
 
 ```bash
-make CC=aarch64-linux-gnu-gcc
+make CXX=aarch64-linux-gnu-g++
+```
+
+Optional diagnostic build:
+
+```bash
+make SDRGG_ENABLE_DIAGNOSTICS=1
 ```
 
 ## Build Outputs
 
-- `libsdrgg.a`
-- `libsdrgg.so`
+- `libsdrgg.so -> libsdrgg.so.1 -> libsdrgg.so.1.2.1`
+- `libsdrgg.a` via `make static`
 - `examples/enumerate_devices`
 - `examples/show_capabilities`
 - `examples/register_access`
@@ -172,7 +181,11 @@ make CC=aarch64-linux-gnu-gcc
 - `examples/save_iq_u8`
 - `examples/chip_aware_device`
 - `examples/stream_capture`
+- `examples/device_reset`
 - `examples/multi_device_reliability`
+
+Examples link against the shared object and embed an `rpath` to the parent
+directory so they run from the source tree without setting `LD_LIBRARY_PATH`.
 
 ## Permissions And Runtime Notes
 
@@ -410,6 +423,8 @@ For runnable examples, see:
 - `examples/save_iq_u8.cpp`
 - `examples/chip_aware_device.cpp`
 - `examples/stream_capture.cpp`
+- `examples/device_reset.cpp`
+- `examples/multi_device_reliability.cpp`
 - `examples/README.md`
 
 ## Example Programs
@@ -432,6 +447,7 @@ Available examples:
 - `examples/save_iq_u8`: save a short IQ capture to a raw unsigned 8-bit interleaved file
 - `examples/chip_aware_device`: query real-device `tuner_caps` and configure the tuner accordingly
 - `examples/stream_capture`: configure one device and capture IQ buffers for a short interval
+- `examples/device_reset`: exercise the staged `reset::` recovery API against one live device
 - `examples/multi_device_reliability`: open all detected dongles in one context, stream on all of them at once, and fail if any device stalls or drops callback sequence continuity
 
 Typical usage:
@@ -446,6 +462,7 @@ sudo ./examples/save_iq_u8
 sudo ./examples/save_iq_u8 capture.u8 868.3 5
 sudo ./examples/chip_aware_device
 sudo ./examples/stream_capture
+sudo ./examples/device_reset
 sudo ./examples/multi_device_reliability
 ```
 
@@ -489,9 +506,16 @@ The gain allocation strategy distributes the requested total gain across three s
 
 This design ensures optimal sensitivity at 1090 MHz and other weak-signal applications.
 
-### Pre-stream Diagnostics
+### Optional Diagnostics
 
-When `start_stream()` is called, the library prints a `sdrgg-regdiag` block to stderr showing key demod and tuner register values. This includes NCO frequency, resampler ratio, gain register state, and IF offset — useful for verifying the hardware path is correctly configured before data flows.
+Release builds stay quiet by default. If you want register and URB diagnostics while bringing up hardware, build with:
+
+```bash
+make clean
+make SDRGG_ENABLE_DIAGNOSTICS=1
+```
+
+That enables the `sdrgg-regdiag` and `sdrgg-urb-diag` stderr traces so you can inspect demod state, tuner gain registers, IF offset, and early URB failures during stream startup.
 
 ### RTL2832U IF Handling
 

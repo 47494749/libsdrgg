@@ -1,5 +1,14 @@
 # libsdrgg Changelog
 
+## v1.2.1 — 2026-05-27
+
+### Release Cleanup
+
+- Make diagnostic stderr output opt-in at build time via `SDRGG_ENABLE_DIAGNOSTICS=1` instead of always printing `sdrgg-regdiag` and `sdrgg-urb-diag` in normal builds.
+- Update `README.md` build instructions to match the actual Makefile targets and cross-compilation variable (`CXX`, not `CC`).
+- Align the top-level README example inventory with the current example set, including `device_reset` and `multi_device_reliability`.
+- Expand `examples/README.md` purpose text so it matches the recovery and stress-test examples shipped in the tree.
+
 ## v1.2.0 — 2026-05-24
 
 ### New: Multi-Level Device Reset API (`reset::` namespace)

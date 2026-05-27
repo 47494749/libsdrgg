@@ -188,7 +188,10 @@ static int32_t resolve_usb_path( int32_t fd, char *path_buf, size_t buf_len ) {
     if( atoi( attr_val ) != devnum ) continue;
 
     /* Found it */
-    snprintf( path_buf, buf_len, "%s", ent->d_name );
+    size_t name_len = strnlen( ent->d_name, buf_len );
+    if( name_len >= buf_len ) continue;
+    memcpy( path_buf, ent->d_name, name_len );
+    path_buf[name_len] = '\0';
     closedir( dir );
     return SDRGG_OK;
   }

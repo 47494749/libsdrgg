@@ -22,6 +22,10 @@
 #include <pthread.h>
 #include <linux/usbdevice_fs.h>
 
+#ifndef SDRGG_ENABLE_DIAGNOSTICS
+#define SDRGG_ENABLE_DIAGNOSTICS 0
+#endif
+
 /* ======================================================================
 *  USB protocol constants
 * ====================================================================== */
@@ -99,12 +103,12 @@
 * ====================================================================== */
 
 typedef struct sdrgg_urb {
-  struct usbdevfs_urb urb;
   sdrgg_dev_t *dev;
   uint8_t *buffer;
   uint32_t buf_size;
   uint32_t index;
   bool submitted;
+  struct usbdevfs_urb *urb;
 } sdrgg_urb_t;
 
 /* ======================================================================

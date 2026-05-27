@@ -107,10 +107,11 @@ int32_t usb::bulk_read( sdrgg_dev_t *dev, uint8_t *buf, uint32_t len, uint32_t t
 /* ---- Interface claim/release ---- */
 
 int32_t usb::claim( sdrgg_dev_t *dev ) {
-  uint32_t interface = 0;
+  int32_t interface = 0;
 
   /* Detach kernel driver if attached */
-  struct usbdevfs_getdriver getdrv = { .interface = interface };
+  struct usbdevfs_getdriver getdrv = {};
+  getdrv.interface = interface;
   if( ioctl( dev->identity.fd, USBDEVFS_GETDRIVER, &getdrv ) == 0 ) {
     struct usbdevfs_ioctl disc = {
       .ifno = interface,
@@ -160,6 +161,16 @@ int32_t usb::urb_alloc( sdrgg_dev_t *dev, uint32_t count, uint32_t buf_size ) {
     u->index = i;
     u->buf_size = buf_size;
     u->submitted = false;
+    u->urb = (struct usbdevfs_urb *)calloc( 1, sizeof( *u->urb ) );
+    if( !u->urb ) {
+      for( uint32_t j = 0; j < i; j++ ) {
+        free( dev->pipeline.arena[j].buffer );
+        free( dev->pipeline.arena[j].urb );
+      }
+      free( dev->pipeline.arena );
+      dev->pipeline.arena = NULL;
+      return SDRGG_ERR_NOMEM;
+    }
 
     /* Page-aligned allocation for DMA.
     * The kernel can DMA directly into this buffer without copying. */
@@ -167,20 +178,22 @@ int32_t usb::urb_alloc( sdrgg_dev_t *dev, uint32_t count, uint32_t buf_size ) {
       /* Cleanup already allocated */
       for( uint32_t j = 0; j < i; j++ ) {
         free( dev->pipeline.arena[j].buffer );
+        free( dev->pipeline.arena[j].urb );
       }
+      free( u->urb );
       free( dev->pipeline.arena );
       dev->pipeline.arena = NULL;
       return SDRGG_ERR_NOMEM;
     }
 
     /* Pre-fill URB structure */
-    memset( &u->urb, 0, sizeof( u->urb ) );
-    u->urb.type = USBDEVFS_URB_TYPE_BULK;
-    u->urb.endpoint = SDRGG_USB_EPA;
-    u->urb.buffer = u->buffer;
-    u->urb.buffer_length = buf_size;
+    memset( u->urb, 0, sizeof( *u->urb ) );
+    u->urb->type = USBDEVFS_URB_TYPE_BULK;
+    u->urb->endpoint = SDRGG_USB_EPA;
+    u->urb->buffer = u->buffer;
+    u->urb->buffer_length = buf_size;
     /* usercontext points back to our tracking struct */
-    u->urb.usercontext = u;
+    u->urb->usercontext = u;
   }
 
   return SDRGG_OK;
@@ -196,6 +209,7 @@ void usb::urb_free( sdrgg_dev_t *dev ) {
 
   for( uint32_t i = 0; i < dev->pipeline.arena_depth; i++ ) {
     free( dev->pipeline.arena[i].buffer );
+    free( dev->pipeline.arena[i].urb );
   }
   free( dev->pipeline.arena );
   dev->pipeline.arena = NULL;
@@ -209,10 +223,10 @@ int32_t usb::urb_submit( sdrgg_dev_t *dev, sdrgg_urb_t *u ) {
   }
 
   /* Reset URB fields for resubmission */
-  u->urb.actual_length = 0;
-  u->urb.status = 0;
+  u->urb->actual_length = 0;
+  u->urb->status = 0;
 
-  int32_t rc = ioctl( dev->identity.fd, USBDEVFS_SUBMITURB, &u->urb );
+  int32_t rc = ioctl( dev->identity.fd, USBDEVFS_SUBMITURB, u->urb );
   if( rc < 0 ) {
     return SDRGG_ERR_IO;
   }
@@ -241,7 +255,7 @@ int32_t usb::urb_cancel_all( sdrgg_dev_t *dev ) {
   /* Discard all submitted URBs */
   for( uint32_t i = 0; i < dev->pipeline.arena_depth; i++ ) {
     if( dev->pipeline.arena[i].submitted ) {
-      ioctl( dev->identity.fd, USBDEVFS_DISCARDURB, &dev->pipeline.arena[i].urb );
+      ioctl( dev->identity.fd, USBDEVFS_DISCARDURB, dev->pipeline.arena[i].urb );
     }
   }
 
@@ -289,7 +303,7 @@ sdrgg_urb_t *usb::urb_reap( sdrgg_dev_t *dev ) {
     dev->pipeline.backpressure = false;
 
     /* Accounting: classify reap as completion or drop */
-    if( u->urb.status == 0 && u->urb.actual_length > 0 ) {
+    if( u->urb->status == 0 && u->urb->actual_length > 0 ) {
       dev->pipeline.completed++;
     } else {
       dev->pipeline.dropped++;
@@ -321,12 +335,12 @@ static void process_device_urbs( sdrgg_dev_t *dev ) {
       continue; /* draining after cancel, don't callback */
     }
 
-    if( u->urb.status == 0 && u->urb.actual_length > 0 ) {
+    if( u->urb->status == 0 && u->urb->actual_length > 0 ) {
       /* Deliver buffer to user — data pointer is the DMA buffer itself,
       * no memcpy needed (zero-copy) */
       sdrgg_buffer_t desc = {
         .data = u->buffer,
-        .length = (uint32_t)u->urb.actual_length,
+        .length = (uint32_t)u->urb->actual_length,
         .timestamp_us = monotonic_us(),
         .sequence = dev->stream.sequence++,
       };
@@ -336,11 +350,13 @@ static void process_device_urbs( sdrgg_dev_t *dev ) {
       }
     } else {
       /* URB completed with error or zero length */
+#if SDRGG_ENABLE_DIAGNOSTICS
       if( dev->pipeline.dropped <= 3 ) {
         fprintf( stderr, "sdrgg-urb-diag: slot=%d status=%d actual=%d dropped=%u\n",
-                 dev->identity.slot_index, u->urb.status,
-                 u->urb.actual_length, dev->pipeline.dropped );
+         dev->identity.slot_index, u->urb->status,
+         u->urb->actual_length, dev->pipeline.dropped );
       }
+#endif
     }
 
     /* Resubmit URB immediately (keeps pipeline full) */
@@ -375,7 +391,8 @@ static void *event_loop_thread( void *arg ) {
       /* Check if it's the wakeup pipe */
       if( events[i].data.ptr == ctx ) {
         char dummy;
-        ( void )read( ctx->event_pipe[0], &dummy, 1 );
+        ssize_t pipe_rc = read( ctx->event_pipe[0], &dummy, 1 );
+        ( void )pipe_rc;
         continue;
       }
 
@@ -451,7 +468,8 @@ void usb::event_loop_stop( sdrgg_ctx_t *ctx ) {
 
   /* Wake up the event loop so it exits */
   char c = 'q';
-  ( void )write( ctx->event_pipe[1], &c, 1 );
+  ssize_t wake_rc = write( ctx->event_pipe[1], &c, 1 );
+  ( void )wake_rc;
 
   pthread_join( ctx->event_thread, NULL );
 
@@ -478,7 +496,8 @@ int32_t usb::event_loop_add_dev( sdrgg_ctx_t *ctx, sdrgg_dev_t *dev ) {
 
   /* Wake up event loop to pick up the new fd */
   char c = 'a';
-  ( void )write( ctx->event_pipe[1], &c, 1 );
+  ssize_t wake_rc = write( ctx->event_pipe[1], &c, 1 );
+  ( void )wake_rc;
 
   return SDRGG_OK;
 }
@@ -552,7 +571,10 @@ int32_t usb::enumerate( sdrgg_ctx_t *ctx, sdrgg_devinfo_t *devs, int32_t max_dev
     }
 
     char sysdir[256];
-    snprintf( sysdir, sizeof( sysdir ), "/sys/bus/usb/devices/%s", ent->d_name );
+    int32_t sysdir_len = snprintf( sysdir, sizeof( sysdir ), "/sys/bus/usb/devices/%s", ent->d_name );
+    if( sysdir_len < 0 || (size_t)sysdir_len >= sizeof( sysdir ) ) {
+      continue;
+    }
 
     uint16_t vid = 0, pid = 0;
     if( read_sysfs_attr_u16( sysdir, "idVendor", &vid ) < 0 ) {

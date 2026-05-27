@@ -858,11 +858,10 @@ int32_t set_vga_gain( sdrgg_dev_t *dev, int32_t index ) {
   if( index > 15 ) index = 15;
   stage_assignment sa;
   sa.control_reg = vga_stage.control_reg;
-  /* Bit 4 = 1 selects manual VGA mode.  The R820T VGA AGC (bit4=0)
-   * does not work well for pulsed signals like ADS-B because it
-   * settles to a gain level appropriate for the noise floor, dropping
-   * brief signal pulses below the demodulator threshold. */
-  sa.composed_bits = (uint8_t)( 0x10 | index );
+  /* Keep bit 4 clear so the tuner's internal VGA AGC remains enabled.
+   * Historical note: forcing manual VGA here (0x10 | index) broke 1090 MHz
+   * ADS-B decoding in libsdrgg even with VGA pinned at step 15. */
+  sa.composed_bits = (uint8_t)index;
   sa.affected_mask = 0x1F;
   return apply_assignment( dev, &sa );
 }

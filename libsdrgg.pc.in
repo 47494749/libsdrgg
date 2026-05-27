@@ -1,0 +1,10 @@
+prefix=@PREFIX@
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: libsdrgg
+Description: Low-level RTL2832U SDR control and async streaming library
+Version: @VERSION@
+Libs: -L${libdir} -lsdrgg
+Libs.private: -lpthread -lm
+Cflags: -I${includedir}
