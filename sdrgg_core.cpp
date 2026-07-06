@@ -70,6 +70,9 @@ static int32_t r820t_apply_auto( sdrgg_dev_t *dev ) {
   if( rc == SDRGG_OK ) {
     rc = r820t::set_mixer_gain( dev, -1 );
   }
+  if( rc == SDRGG_OK ) {
+    rc = r820t::set_vga_gain( dev, 11 );
+  }
   return rc;
 }
 
@@ -95,7 +98,7 @@ static const tuner_family_contract family_contracts[] = {
     0xC6,
     1,
     fc0012::detect,
-    nullptr,
+    rtl::configure_fc0012,
     fc0012::init,
     fc0012_apply_gain,
     nullptr,
@@ -467,14 +470,22 @@ int32_t set_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db ) {
     return SDRGG_ERR_PARAM;
   }
 
-  if( gain_tenth_db == SDRGG_GAIN_AUTO && contract->apply_auto_gain_fn ) {
-    /* Auto policy: delegate to family's AGC activation */
-    rc = contract->apply_auto_gain_fn( dev );
-    dev->tuning.gain_policy = -1;
+  if( gain_tenth_db == SDRGG_GAIN_AUTO ) {
+    if( !contract->apply_auto_gain_fn ) {
+      rc = SDRGG_ERR_PARAM;
+    } else {
+      /* Auto policy: delegate to family's AGC activation */
+      rc = contract->apply_auto_gain_fn( dev );
+      if( rc == SDRGG_OK ) {
+        dev->tuning.gain_policy = SDRGG_GAIN_AUTO;
+      }
+    }
   } else {
     /* Manual policy: delegate to family's gain selection */
     rc = contract->apply_gain_fn( dev, gain_tenth_db );
-    dev->tuning.gain_policy = gain_tenth_db;
+    if( rc == SDRGG_OK ) {
+      dev->tuning.gain_policy = gain_tenth_db;
+    }
   }
 
   pthread_mutex_unlock( &dev->lock );

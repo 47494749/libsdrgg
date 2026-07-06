@@ -671,6 +671,28 @@ int32_t rtl::configure_r820t( sdrgg_dev_t *dev ) {
   return SDRGG_OK;
 }
 
+/* FC0012-specific Zero-IF mode activation */
+int32_t rtl::configure_fc0012( sdrgg_dev_t *dev ) {
+  desc_sequence phase_spec;
+  dseq_clear( &phase_spec );
+  dseq_add_demod( &phase_spec, 1, 0xB1, 0x1B, 1 );   /* Zero-IF mode + DC cancel */
+  dseq_add_demod( &phase_spec, 0, 0x08, 0xCD, 1 );   /* IQ ADC mode (both channels) */
+  dseq_add_demod( &phase_spec, 1, 0x15, 0x00, 1 );   /* No spectrum inversion */
+
+  int32_t rc = apply_descriptors( dev, &phase_spec );
+  if( rc != SDRGG_OK ) {
+    return rc;
+  }
+
+  /* FC0012 is Zero-IF: NCO = 0 */
+  rc = rtl::set_if_freq( dev, 0 );
+  if( rc != SDRGG_OK ) {
+    return rc;
+  }
+
+  return SDRGG_OK;
+}
+
 /* Shutdown: halt streaming, demod power-down */
 int32_t rtl::deinit( sdrgg_dev_t *dev ) {
   rtl::stop_bulk( dev );
@@ -703,6 +725,19 @@ int32_t rtl::set_sample_rate( sdrgg_dev_t *dev, uint32_t rate_hz ) {
   /* Derive achieved sample rate from quantized ratio */
   uint32_t effective_ratio = ratio | ( ( ratio & 0x08000000 ) << 1 );
   dev->tuning.sampling_rate_hz = (uint32_t)( ( (uint64_t)xtal * ( 1ULL << 22 ) ) / effective_ratio );
+
+  if( dev->identity.tuner_class == SDRGG_TUNER_R820T ||
+      dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
+    /* Only update tuner bandwidth/IF for sample rates >= 2 MSPS.
+     * Lower rates (FLARM 1.6M, POCSAG 1.2M) keep the default 3.57 MHz IF
+     * which avoids the narrow-filter/low-IF regime that causes signal loss. */
+    if( dev->tuning.sampling_rate_hz >= 2000000U ) {
+      int32_t bw_rc = r820t::set_bandwidth( dev, dev->tuning.sampling_rate_hz / 1000U );
+      if( bw_rc != SDRGG_OK ) {
+        return bw_rc;
+      }
+    }
+  }
 
   /* Emit ratio registers (demod page 1, 0x9F..0xA2) */
   int32_t rc = submit_demod_write( dev, 1, 0x9F, ( ratio >> 16 ) & 0xFFFF, 2 );

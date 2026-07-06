@@ -566,68 +566,65 @@ const int32_t mixer_db[16] = {
   0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8
 };
 
-/* Greedy gain decomposition — equivalent to the legacy sequential
-*  allocator: fill LNA first, then mixer, then VGA with the residual.
-*  Returns a static gain_profile populated on each call. */
+namespace {
 
-static gain_profile greedy_result;
+constexpr uint8_t manual_vga_index = 8;
+constexpr uint8_t auto_vga_index = 11;
+
+/* Mirror librtlsdr's exported 29-step R820T gain table exactly.
+ * The tuner keeps VGA fixed and walks LNA/Mixer pairs in the same order
+ * as r82xx_set_gain(). */
+static const gain_profile manual_gain_profiles[] = {
+  {   0,  0,  0, manual_vga_index },
+  {   9,  1,  0, manual_vga_index },
+  {  14,  1,  1, manual_vga_index },
+  {  27,  2,  1, manual_vga_index },
+  {  37,  2,  2, manual_vga_index },
+  {  77,  3,  2, manual_vga_index },
+  {  87,  3,  3, manual_vga_index },
+  { 125,  4,  3, manual_vga_index },
+  { 144,  4,  4, manual_vga_index },
+  { 157,  5,  4, manual_vga_index },
+  { 166,  5,  5, manual_vga_index },
+  { 197,  6,  5, manual_vga_index },
+  { 207,  6,  6, manual_vga_index },
+  { 229,  7,  6, manual_vga_index },
+  { 254,  7,  7, manual_vga_index },
+  { 280,  8,  7, manual_vga_index },
+  { 297,  8,  8, manual_vga_index },
+  { 328,  9,  8, manual_vga_index },
+  { 338,  9,  9, manual_vga_index },
+  { 364, 10,  9, manual_vga_index },
+  { 372, 10, 10, manual_vga_index },
+  { 386, 11, 10, manual_vga_index },
+  { 402, 11, 11, manual_vga_index },
+  { 421, 12, 11, manual_vga_index },
+  { 434, 12, 12, manual_vga_index },
+  { 439, 13, 12, manual_vga_index },
+  { 445, 13, 13, manual_vga_index },
+  { 480, 14, 13, manual_vga_index },
+  { 496, 15, 14, manual_vga_index },
+};
+
+} /* namespace */
 
 const gain_profile *select_gain_profile( int32_t target_tenth_db ) {
-  /* Compute cumulative gains per stage */
-  int32_t lna_cum[16], mixer_cum[16];
-  lna_cum[0] = 0;
-  mixer_cum[0] = 0;
-  for( int32_t i = 1; i < 16; i++ ) {
-    lna_cum[i] = lna_cum[i-1] + lna_db[i];
-    mixer_cum[i] = mixer_cum[i-1] + mixer_db[i];
+  if( target_tenth_db < 0 ) {
+    return nullptr;
   }
 
-  int32_t remaining = target_tenth_db;
-  int32_t lna_idx = 0, mix_idx = 0, vga_idx = 0;
-
-  /* Fill LNA first */
-  for( int32_t i = 1; i < 16; i++ ) {
-    if( lna_cum[i] <= remaining ) {
-      lna_idx = i;
-    } else {
-      break;
+  for( const gain_profile &profile : manual_gain_profiles ) {
+    if( target_tenth_db <= profile.total_tenth_db ) {
+      return &profile;
     }
   }
-  remaining -= lna_cum[lna_idx];
 
-  /* Then mixer */
-  for( int32_t i = 1; i < 16; i++ ) {
-    if( mixer_cum[i] <= remaining ) {
-      mix_idx = i;
-    } else {
-      break;
-    }
-  }
-  remaining -= mixer_cum[mix_idx];
-  if( remaining < 0 ) remaining = 0;
-
-  /* VGA always max for adequate ADC level (LNA+Mixer control RF gain) */
-  vga_idx = 15;
-
-  greedy_result.lna_index = (uint8_t)lna_idx;
-  greedy_result.mixer_index = (uint8_t)mix_idx;
-  greedy_result.vga_index = (uint8_t)vga_idx;
-  greedy_result.total_tenth_db = lna_cum[lna_idx] + mixer_cum[mix_idx] + vga_idx * 35;
-
-  return &greedy_result;
+  return &manual_gain_profiles[( sizeof( manual_gain_profiles ) / sizeof( manual_gain_profiles[0] ) ) - 1];
 }
 
-/* Stage descriptors for the three gain paths */
+/* Stage descriptor for the LNA gain path */
 static const stage_descriptor lna_stage = {
   16, addr::LNA_BIAS, 0x10, 0x0F
-};
-
-static const stage_descriptor mixer_stage = {
-  16, addr::MIXER_DRIVE, 0x10, 0x0F
-};
-
-static const stage_descriptor vga_stage = {
-  16, addr::IF_STAGE, 0x00, 0x0F
 };
 
 /* ======================================================================
@@ -737,20 +734,17 @@ int32_t init( sdrgg_dev_t *dev ) {
     }
   }
 
-  /* Default gain policy: LNA auto, mixer auto, VGA mid-range */
-  stage_assignment assignments[3];
-  assignments[0] = compose_assignment( &lna_stage, -1 );
-  assignments[1] = compose_assignment( &mixer_stage, -1 );
-  assignments[2] = compose_assignment( &vga_stage, 12 );
-
-  for( int32_t i = 0; i < 3; i++ ) {
-    int32_t rc = apply_assignment( dev, &assignments[i] );
-    if( rc != SDRGG_OK ) {
-      return rc;
-    }
+  int32_t rc = set_lna_gain( dev, -1 );
+  if( rc != SDRGG_OK ) {
+    return rc;
   }
 
-  return SDRGG_OK;
+  rc = set_mixer_gain( dev, -1 );
+  if( rc != SDRGG_OK ) {
+    return rc;
+  }
+
+  return set_vga_gain( dev, auto_vga_index );
 }
 
 /* Transition to low-power dormancy */
@@ -849,52 +843,105 @@ int32_t set_lna_gain( sdrgg_dev_t *dev, int32_t index ) {
 }
 
 int32_t set_mixer_gain( sdrgg_dev_t *dev, int32_t index ) {
-  stage_assignment sa = compose_assignment( &mixer_stage, index );
-  return apply_assignment( dev, &sa );
+  if( index < 0 ) {
+    return tuner::rmw( dev, addr::MIXER_DRIVE, 0x10, 0x10 );
+  }
+
+  if( index > 15 ) {
+    index = 15;
+  }
+
+  /* Keep mixer AGC enabled (bit4=1) even in manual mode.
+     The R820T auto-adjusts mixer gain for best linearity;
+     forcing manual (bit4=0) can degrade sensitivity at lower frequencies. */
+  return tuner::rmw( dev, addr::MIXER_DRIVE, 0x10 | (uint8_t)index, 0x1F );
 }
 
 int32_t set_vga_gain( sdrgg_dev_t *dev, int32_t index ) {
   if( index < 0 ) index = 0;
   if( index > 15 ) index = 15;
-  stage_assignment sa;
-  sa.control_reg = vga_stage.control_reg;
-  /* Keep bit 4 clear so the tuner's internal VGA AGC remains enabled.
-   * Historical note: forcing manual VGA here (0x10 | index) broke 1090 MHz
-   * ADS-B decoding in libsdrgg even with VGA pinned at step 15. */
-  sa.composed_bits = (uint8_t)index;
-  sa.affected_mask = 0x1F;
-  return apply_assignment( dev, &sa );
+
+  /* Match rtl-sdr's fixed-VGA programming: clear bit 7 and bit 4 while
+   * updating the VGA code in the low nibble. */
+  return tuner::rmw( dev, addr::IF_STAGE, (uint8_t)index, 0x9F );
 }
 
 /* ---- Filter bandwidth configuration ---- */
 
 int32_t set_bandwidth( sdrgg_dev_t *dev, uint32_t bw_khz ) {
-  /* Derive highpass corner from bandwidth target */
-  uint8_t hp_encoding;
-  if( bw_khz <= 200 ) {
-    hp_encoding = 0x6B;
-  } else if( bw_khz <= 300 ) {
-    hp_encoding = 0x6A;
-  } else if( bw_khz <= 500 ) {
-    hp_encoding = 0x2A;
+  static const uint32_t if_low_pass_bw_table[] = {
+    1700, 1600, 1550, 1450, 1200, 900, 700, 550, 450, 350
+  };
+  constexpr uint32_t filt_hp_bw1 = 350;
+  constexpr uint32_t filt_hp_bw2 = 380;
+
+  uint8_t reg_0a;
+  uint8_t reg_0b;
+  uint32_t if_freq_khz;
+  uint32_t working_bw_khz = bw_khz;
+  uint32_t real_bw_khz = 0;
+
+  if( bw_khz > 7000 ) {
+    reg_0a = 0x10;
+    reg_0b = 0x0B;
+    if_freq_khz = 4570;
+  } else if( bw_khz > 6000 ) {
+    reg_0a = 0x10;
+    reg_0b = 0x2A;
+    if_freq_khz = 4570;
+  } else if( bw_khz > ( if_low_pass_bw_table[0] + filt_hp_bw1 + filt_hp_bw2 ) ) {
+    reg_0a = 0x10;
+    reg_0b = 0x6B;
+    if_freq_khz = 3570;
   } else {
-    hp_encoding = 0x0B;
+    reg_0a = 0x00;
+    reg_0b = 0x80;
+    if_freq_khz = 2300;
+
+    if( working_bw_khz > ( if_low_pass_bw_table[0] + filt_hp_bw1 ) ) {
+      working_bw_khz -= filt_hp_bw2;
+      if_freq_khz += filt_hp_bw2;
+      real_bw_khz += filt_hp_bw2;
+    } else {
+      reg_0b |= 0x20;
+    }
+
+    if( working_bw_khz > if_low_pass_bw_table[0] ) {
+      working_bw_khz -= filt_hp_bw1;
+      if_freq_khz += filt_hp_bw1;
+      real_bw_khz += filt_hp_bw1;
+    } else {
+      reg_0b |= 0x40;
+    }
+
+    uint32_t index;
+    for( index = 0; index < ( sizeof( if_low_pass_bw_table ) / sizeof( if_low_pass_bw_table[0] ) ); index++ ) {
+      if( working_bw_khz > if_low_pass_bw_table[index] ) {
+        break;
+      }
+    }
+    if( index == 0 ) {
+      index = 0;
+    } else {
+      index--;
+    }
+
+    reg_0b |= (uint8_t)( 15 - index );
+    real_bw_khz += if_low_pass_bw_table[index];
+    if_freq_khz -= real_bw_khz / 2;
   }
 
-  /* Derive quality and extension bits */
-  uint8_t quality_control = ( bw_khz > 3000 ) ? 0x10 : 0x00;
-  uint8_t boost_control = ( bw_khz <= 1000 ) ? 0x10 : 0x00;
-  uint8_t extension_control = ( bw_khz > 7000 ) ? 0x80 : 0x00;
-
-  /* Build filter intent sequence */
   intent_seq seq;
   iseq_clear( &seq );
-  iseq_push_field( &seq, addr::HP_CONTROL,  hp_encoding,       0xEF );
-  iseq_push_field( &seq, addr::FILT_BIAS,   quality_control,   0x10 );
-  iseq_push_field( &seq, addr::FILTER_PATH, boost_control,     0x30 );
-  iseq_push_field( &seq, addr::CLK_ROUTING, extension_control, 0x80 );
+  iseq_push_field( &seq, addr::FILT_BIAS,  reg_0a, 0x10 );
+  iseq_push_field( &seq, addr::HP_CONTROL, reg_0b, 0xEF );
 
-  return lower_intents( dev, &seq );
+  int32_t rc = lower_intents( dev, &seq );
+  if( rc != SDRGG_OK ) {
+    return rc;
+  }
+
+  return rtl::set_if_freq( dev, if_freq_khz * 1000U );
 }
 
 /* ---- Signal level readback ---- */

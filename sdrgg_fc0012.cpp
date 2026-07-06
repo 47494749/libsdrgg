@@ -437,6 +437,23 @@ static int32_t execute_tuning_session( sdrgg_dev_t *dev, tuning_session *session
 }
 
 /* ======================================================================
+*  FC0012 CRITICAL INTEGRATION NOTE (search: FC0012_ADC_FIX)
+*
+*  When using librtlsdr (not sdrgg) as the backend for FC0012 devices,
+*  rtlsdr_set_direct_sampling(dev, 0) MUST be called after rtlsdr_open().
+*  This is the ONLY call in librtlsdr that programs RTL2832U demod
+*  register page0:0x08 = 0xCD (enable both I+Q ADC channels for Zero-IF).
+*  Without it, the ADC only captures one channel and gain/frequency
+*  changes have NO visible effect on the received IQ data.
+*
+*  This call is HARMFUL for R820T (causes PLL-not-locked regression),
+*  so it must be called ONLY for FC0012 tuners.
+*
+*  When using the sdrgg backend, configure_fc0012() in sdrgg_rtl.cpp
+*  handles this via dseq_add_demod(0, 0x08, 0xCD, 1) during probe.
+* ====================================================================== */
+
+/* ======================================================================
 *  Public API implementation
 * ====================================================================== */
 
@@ -487,7 +504,23 @@ int32_t set_freq( sdrgg_dev_t *dev, uint32_t freq_hz ) {
 /* Gain control via state machine selection */
 int32_t set_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db ) {
   uint8_t current;
-  int32_t rc = wire_read( dev, loc::LNA_GAIN, &current );
+  int32_t rc;
+
+  /* Switch LNA to manual mode: set bit 3 of register 0x0D.
+   * Without this, the FC0012 AGC overrides register 0x13 writes. */
+  uint8_t lna_ovr = 0;
+  rc = wire_read( dev, loc::LNA_OVERRIDE, &lna_ovr );
+  if( rc != SDRGG_OK ) {
+    return rc;
+  }
+  if( !( lna_ovr & 0x08 ) ) {
+    rc = wire_write( dev, loc::LNA_OVERRIDE, lna_ovr | 0x08 );
+    if( rc != SDRGG_OK ) {
+      return rc;
+    }
+  }
+
+  rc = wire_read( dev, loc::LNA_GAIN, &current );
   if( rc != SDRGG_OK ) {
     return rc;
   }

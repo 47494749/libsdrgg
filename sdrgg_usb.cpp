@@ -349,7 +349,33 @@ static void process_device_urbs( sdrgg_dev_t *dev ) {
         dev->stream.callback( dev, &desc, dev->stream.user_data );
       }
     } else {
-      /* URB completed with error or zero length */
+      /* URB completed with error or zero length.
+       *
+       * 2026-05-29 FIX: Clear endpoint halt on stall (-EPIPE).
+       *
+       * ROOT CAUSE: When the USB bulk endpoint enters STALL state (due to
+       * transient bus errors, hub scheduling glitches, or power micro-drops
+       * on the RPi USB bus), the USB protocol requires the host to send
+       * CLEAR_FEATURE(ENDPOINT_HALT) to recover. Without this, resubmitted
+       * URBs keep failing, the 1ms epoll loop hammers the bus with ~1000
+       * failing resubmits/sec, the RTL2832U I2C bridge gets disrupted, and
+       * the R820T tuner loses CHIP_EN (reg 0x01 bit0: 0x81->0x80) = hard
+       * failure requiring physical reset.
+       *
+       * librtlsdr (via libusb) does this automatically via libusb_clear_halt().
+       * That is why the problem NEVER manifests with librtlsdr.
+       *
+       * Fix: on -EPIPE, issue USBDEVFS_CLEAR_HALT before resubmitting.
+       * Also add a small backoff on any error to avoid bus hammering.
+       */
+      if( u->urb->status == -32 /* -EPIPE = endpoint stalled */ ) {
+        unsigned int ep = SDRGG_USB_EPA;
+        ioctl( dev->identity.fd, USBDEVFS_CLEAR_HALT, &ep );
+#if SDRGG_ENABLE_DIAGNOSTICS
+        fprintf( stderr, "sdrgg-urb-diag: slot=%d STALL detected, CLEAR_HALT issued\n",
+                 dev->identity.slot_index );
+#endif
+      }
 #if SDRGG_ENABLE_DIAGNOSTICS
       if( dev->pipeline.dropped <= 3 ) {
         fprintf( stderr, "sdrgg-urb-diag: slot=%d status=%d actual=%d dropped=%u\n",
@@ -357,6 +383,10 @@ static void process_device_urbs( sdrgg_dev_t *dev ) {
          u->urb->actual_length, dev->pipeline.dropped );
       }
 #endif
+      /* Brief backoff on error to avoid hammering the USB bus.
+       * 2026-05-29: Without this, the 1ms epoll loop resubmits failing URBs
+       * at ~1000/sec which can cascade into tuner power loss. */
+      usleep( 1000 );
     }
 
     /* Resubmit URB immediately (keeps pipeline full) */

@@ -1,5 +1,38 @@
 # libsdrgg Changelog
 
+## v1.3.0 — 2026-07-06
+
+### New: FC0012 tuner support
+
+- Full FC0012 Zero-IF tuner integration: PLL tuning, VCO calibration, gain control.
+- RTL2832U demodulator configuration for FC0012: Zero-IF mode (reg 0xB1=0x1B), dual I/Q ADC (reg 0x08=0xCD), no spectrum inversion, IF NCO=0.
+- FC0012 registered in the family probe table (`prepare_baseband_fn`).
+- LNA manual mode: set_gain now forces LNA to manual (reg 0x0D bit 3) before writing gain, preventing AGC from overriding programmed values.
+
+### R820T gain rewrite
+
+- Replace greedy gain decomposition with a fixed 29-step LNA/Mixer gain table matching librtlsdr exactly.
+- VGA fixed at step 8 (manual mode) or step 11 (auto mode), matching standard rtl-sdr behaviour.
+- `set_mixer_gain`: keep mixer AGC enabled (bit 4) even in manual mode for better linearity.
+- `set_vga_gain`: clear bit 7 and bit 4, write low nibble directly (match rtl-sdr programming).
+- `set_bandwidth`: complete rewrite with proper IF filter table, HP corner selection, and IF frequency adjustment (returns actual IF frequency for NCO programming).
+- Auto-gain now sets LNA auto + mixer auto + VGA at index 11.
+
+### USB transport
+
+- CLEAR_HALT on endpoint stall: detect URB stall status and issue `USBDEVFS_CLEAR_HALT` ioctl before resubmitting, preventing permanent stream failure on intermittent USB errors.
+
+### Bug fixes
+
+- `sdrgg_set_gain`: properly propagate error codes; only update `gain_policy` on success.
+- Auto-gain: return `SDRGG_ERR_PARAM` if the tuner family has no `apply_auto_gain_fn` registered (instead of silently proceeding).
+
+### Cleanup
+
+- Remove `patch_clear_halt.py` development utility script.
+- Remove unconditional gain-readback debug fprintf from FC0012 set_gain.
+- Version bumped to 1.3.0.
+
 ## v1.2.1 — 2026-05-27
 
 ### Release Cleanup
