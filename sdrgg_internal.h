@@ -260,6 +260,7 @@ int32_t enable_i2c_repeater( sdrgg_dev_t *dev, bool enable );
 int32_t start_bulk( sdrgg_dev_t *dev );
 int32_t stop_bulk( sdrgg_dev_t *dev );
 int32_t configure_r820t( sdrgg_dev_t *dev );
+int32_t configure_fc0012( sdrgg_dev_t *dev );
 void set_gpio_output( sdrgg_dev_t *dev, uint8_t gpio );
 void set_gpio_bit( sdrgg_dev_t *dev, uint8_t gpio, int32_t val );
 
