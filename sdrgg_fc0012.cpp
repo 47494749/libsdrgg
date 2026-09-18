@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "sdrgg_internal.h"
 #include "sdrgg_fc0012_internal.h"
@@ -67,6 +68,19 @@ static constexpr uint32_t BAND_SPLIT_HZ    = 300000000;
 *  Wire-level I2C bus access
 * ====================================================================== */
 
+/* Wire-level I2C write with safe sequencing.
+ *
+ * ROM firmware analysis: the 8051 I2C handler (code_72A at 0x072A)
+ * caches the slave address in RAM_8. If the previous I2C transaction
+ * used the same address, it skips the address setup phase. This is
+ * normally fine, but if the I2C bus was left in a bad state (e.g. NAK
+ * after 5 retries), the skip could cause data to be sent to the wrong
+ * register. The repeater enable/disable around each transaction acts
+ * as an implicit bus reset that mitigates this.
+ *
+ * Timing: the repeater enable adds ~500µs delay (from the fix in
+ * enable_i2c_repeater). The USB control transfer itself takes ~1ms
+ * round-trip. Total per wire_write: ~2.5ms — safe for FC0012. */
 static int32_t wire_write( sdrgg_dev_t *dev, uint8_t location, uint8_t content ) {
   uint8_t frame[2] = { location, content };
 
@@ -99,7 +113,11 @@ static int32_t wire_read( sdrgg_dev_t *dev, uint8_t location, uint8_t *content )
   return rc;
 }
 
-/* Dispatch a sequence of wire commands */
+/* Dispatch a sequence of wire commands.
+ * ROM firmware I2C handler (code_FBA) does up to 5 retries on NAK
+ * with no delay between retries. Each I2C transaction takes ~200µs
+ * on the bus. We add no extra delay here because the USB control
+ * transfer round-trip (~1ms) already spaces transactions safely. */
 static int32_t dispatch_commands( sdrgg_dev_t *dev, const wire_cmd *cmds, uint32_t count ) {
   for( uint32_t i = 0; i < count; i++ ) {
     int32_t rc = wire_write( dev, cmds[i].location, cmds[i].content );
@@ -316,9 +334,16 @@ static calibration_outcome run_calibration_policy( sdrgg_dev_t *dev, uint8_t *bw
   calibration_outcome outcome = {};
   outcome.bias_adjusted = false;
 
-  /* Trigger measurement cycle */
+  /* Trigger measurement cycle.
+   * ROM firmware analysis: the I2C write goes through the 8051's
+   * code_FBA with a 5-retry loop on NAK. The VCO needs time to
+   * settle after the trigger before the voltage can be read.
+   * The Linux kernel driver uses msleep(10) here; librtlsdr has
+   * it commented out. We add a conservative delay to avoid
+   * reading stale VCO voltage, especially near band edges. */
   wire_write( dev, loc::VCO_CAL, 0x80 );
   wire_write( dev, loc::VCO_CAL, 0x00 );
+  usleep( 10000 );  /* 10ms VCO settling time (matches kernel driver) */
 
   /* Read and classify result */
   uint8_t raw = 0;
@@ -342,9 +367,9 @@ static calibration_outcome run_calibration_policy( sdrgg_dev_t *dev, uint8_t *bw
 
   if( should_correct ) {
     wire_write( dev, loc::VCO_BW, *bw_reg );
-    /* Re-trigger after bias adjustment */
     wire_write( dev, loc::VCO_CAL, 0x80 );
     wire_write( dev, loc::VCO_CAL, 0x00 );
+    usleep( 10000 );
     outcome.bias_adjusted = true;
   }
 
@@ -457,29 +482,72 @@ static int32_t execute_tuning_session( sdrgg_dev_t *dev, tuning_session *session
 *  Public API implementation
 * ====================================================================== */
 
-/* Detect FC0012 via chip identity register */
+/* Detect FC0012 via chip identity register.
+ *
+ * ROM firmware analysis: the 8051 caches the last I2C slave address
+ * in RAM_8. If a previous probe (e.g. R820T at 0x34) left RAM_8 stale,
+ * the firmware may skip re-sending the slave address on the first I2C
+ * transaction to 0xC6 if RAM_8 happens to match (unlikely but possible
+ * after a warm reset). To ensure a clean probe, we do a dummy I2C read
+ * to a different address first, which invalidates the cache.
+ *
+ * The FC0012 reset pin varies by board: GPIO4 on most designs, GPIO7
+ * on RTL2838UHIDIR variants. Try GPIO4 first, then GPIO7. */
 int32_t detect( sdrgg_dev_t *dev ) {
-  rtl::set_gpio_output( dev, 4 );
-  rtl::set_gpio_bit( dev, 4, 1 );
-  rtl::set_gpio_bit( dev, 4, 0 );
-
-  uint8_t chip_id = 0;
-  int32_t rc = wire_read( dev, CHIP_ID_REG, &chip_id );
-  if( rc != SDRGG_OK ) {
-    return SDRGG_ERR_IO;
+  /* Invalidate firmware I2C address cache by touching a dummy address.
+   * This forces the 8051 to re-send the slave address on the next
+   * real I2C transaction (code_72A in ROM checks RAM_8 != new addr). */
+  {
+    uint8_t dummy_reg = 0;
+    rtl::enable_i2c_repeater( dev, true );
+    usb::control_write( dev, 0x00, 0x0610, &dummy_reg, 1 );
+    rtl::enable_i2c_repeater( dev, false );
   }
 
-  if( chip_id != CHIP_ID_EXPECT ) {
-    return SDRGG_ERR_IO;
+  /* Try GPIO4 first (standard), then GPIO7 (RTL2838UHIDIR variant) */
+  static const uint8_t reset_gpios[] = { 4, 7 };
+  for( int32_t g = 0; g < 2; g++ ) {
+    rtl::set_gpio_output( dev, reset_gpios[g] );
+    rtl::set_gpio_bit( dev, reset_gpios[g], 1 );
+    usleep( 1000 );
+    rtl::set_gpio_bit( dev, reset_gpios[g], 0 );
+    usleep( 1000 );
+
+    uint8_t chip_id = 0;
+    int32_t rc = wire_read( dev, CHIP_ID_REG, &chip_id );
+    if( rc == SDRGG_OK && chip_id == CHIP_ID_EXPECT ) {
+      return SDRGG_OK;
+    }
   }
 
-  return SDRGG_OK;
+  return SDRGG_ERR_IO;
 }
 
-/* Cold-start: apply all init capability blocks */
+/* Cold-start: apply all init capability blocks + gain latch prime.
+ *
+ * The FC0012 has a silicon bug where the first gain write after
+ * power-on is silently ignored (librtlsdr PR#74). The workaround
+ * is to write the minimum gain value during init, which "primes"
+ * the gain register latch so subsequent writes take effect.
+ *
+ * Init sequence matches librtlsdr fc0012_init():
+ *   1. GPIO6 output (band filter control)
+ *   2. Write all init registers (capability blocks)
+ *   3. Prime gain latch: set LNA to manual mode, write min gain */
 int32_t init( sdrgg_dev_t *dev ) {
   rtl::set_gpio_output( dev, 6 );
-  return apply_init_capabilities( dev );
+
+  int32_t rc = apply_init_capabilities( dev );
+  if( rc != SDRGG_OK ) {
+    return rc;
+  }
+
+  /* Prime the gain latch: switch LNA to manual and set minimum gain.
+   * This ensures the next set_gain() call actually takes effect. */
+  wire_write( dev, loc::LNA_OVERRIDE, 0x0A );  /* bit3=1 (manual), bit1=1 (DVB-T) */
+  wire_write( dev, loc::LNA_GAIN, 0x02 );      /* minimum gain = -9.9 dB */
+
+  return SDRGG_OK;
 }
 
 /* Tuning: create and execute a tuning session */
@@ -531,6 +599,14 @@ int32_t set_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db ) {
   /* Preserve upper control bits, apply state encoding */
   current &= 0xE0;
   return wire_write( dev, loc::LNA_GAIN, current | state->hw_code );
+}
+
+/* Enable hardware AGC: clear LNA override bit, let AGC control gain */
+int32_t set_auto_gain( sdrgg_dev_t *dev ) {
+  uint8_t lna_ovr = 0;
+  int32_t rc = wire_read( dev, loc::LNA_OVERRIDE, &lna_ovr );
+  if( rc != SDRGG_OK ) return rc;
+  return wire_write( dev, loc::LNA_OVERRIDE, lna_ovr & ~0x08 );
 }
 
 /* Enumerate available gain levels from capability states */

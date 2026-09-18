@@ -81,6 +81,10 @@ static int32_t fc0012_apply_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db ) {
   return fc0012::set_gain( dev, gain_tenth_db );
 }
 
+static int32_t fc0012_apply_auto( sdrgg_dev_t *dev ) {
+  return fc0012::set_auto_gain( dev );
+}
+
 /* Capability contracts registry */
 static const tuner_family_contract family_contracts[] = {
   {
@@ -101,7 +105,7 @@ static const tuner_family_contract family_contracts[] = {
     rtl::configure_fc0012,
     fc0012::init,
     fc0012_apply_gain,
-    nullptr,
+    fc0012_apply_auto,
   },
 };
 
@@ -374,14 +378,29 @@ void close( sdrgg_dev_t *dev ) {
     pthread_mutex_unlock( &dev->identity.ctx->lock );
   }
 
-  /* Halt streaming if active */
+  /* Halt streaming if active.
+   * Must stop streaming BEFORE any I2C operations (tuner shutdown),
+   * otherwise the 8051 firmware's bulk interrupt handler can corrupt
+   * I2C transactions in progress. */
   if( dev->stream.active ) {
     stop_stream( dev );
   }
 
+  /* Wait for any in-flight USB transfers and I2C operations to complete.
+   * The 8051 I2C handler (code_FBA) retries up to 5 times on NAK with
+   * ~200µs per retry. Total worst case: 5 * 200µs * 2 (read+write) = 2ms.
+   * Add margin for USB round-trip. */
+  usleep( 5000 );
+
   /* Tuner dormancy transition */
   if( dev->identity.tuner_class == SDRGG_TUNER_R820T || dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
     r820t::standby( dev );
+  } else if( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+             dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) {
+    /* FC0012 shutdown: switch LNA back to auto mode (register 0x0D bit 3 clear)
+     * and set a known gain state. This leaves the tuner in a clean state
+     * for the next open, avoiding the gain latch bug on re-open. */
+    fc0012::set_auto_gain( dev );
   }
 
   /* Baseband shutdown */
@@ -410,6 +429,33 @@ int32_t set_frequency( sdrgg_dev_t *dev, uint32_t freq_hz, uint32_t *actual_hz )
   /* Record requested state before hardware attempt */
   dev->tuning.requested_freq_hz = freq_hz;
 
+  /* FC0012 I2C safety: pause bulk endpoint during tuner I2C.
+   *
+   * ROM firmware analysis (RTL2832U 8051):
+   * The firmware caches the IICB block index in RAM_8. When two
+   * consecutive I2C transactions use the same block (both wIndex=0x06xx),
+   * the firmware skips the I2C address setup phase (code_72A at 0x072A,
+   * branch at 0x073D). For R820T this is harmless because R820T
+   * supports sequential I2C and the driver uses shadow registers (no reads).
+   *
+   * FC0012 requires two-phase reads (write addr + read data) and does
+   * NOT support sequential mode. The 8051's IE0 bulk interrupt can
+   * preempt the I2C control transfer handler between the two phases,
+   * corrupting the I2C state machine. This only manifests during
+   * streaming when bulk URBs generate frequent interrupts.
+   *
+   * Fix: stop bulk endpoint before I2C, restart after. The stop/start
+   * takes ~2ms total and happens only on frequency changes (~once per
+   * scan step for sonde, never for fixed-freq roles like IoT). */
+  bool need_bulk_pause = dev->stream.active.load() &&
+    ( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+      dev->identity.tuner_class == SDRGG_TUNER_FC0013 );
+
+  if( need_bulk_pause ) {
+    rtl::stop_bulk( dev );
+    usleep( 1000 );
+  }
+
   int32_t rc;
   if( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ) {
     rc = fc0012::set_freq( dev, freq_hz );
@@ -425,6 +471,10 @@ int32_t set_frequency( sdrgg_dev_t *dev, uint32_t freq_hz, uint32_t *actual_hz )
     if( actual_hz ) {
       *actual_hz = freq_hz;
     }
+  }
+
+  if( need_bulk_pause ) {
+    rtl::start_bulk( dev );
   }
 
   pthread_mutex_unlock( &dev->lock );
@@ -470,22 +520,34 @@ int32_t set_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db ) {
     return SDRGG_ERR_PARAM;
   }
 
+  /* FC0012 I2C safety: pause bulk during gain change (same reason as set_frequency) */
+  bool need_bulk_pause = dev->stream.active.load() &&
+    ( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+      dev->identity.tuner_class == SDRGG_TUNER_FC0013 );
+
+  if( need_bulk_pause ) {
+    rtl::stop_bulk( dev );
+    usleep( 1000 );
+  }
+
   if( gain_tenth_db == SDRGG_GAIN_AUTO ) {
     if( !contract->apply_auto_gain_fn ) {
       rc = SDRGG_ERR_PARAM;
     } else {
-      /* Auto policy: delegate to family's AGC activation */
       rc = contract->apply_auto_gain_fn( dev );
       if( rc == SDRGG_OK ) {
         dev->tuning.gain_policy = SDRGG_GAIN_AUTO;
       }
     }
   } else {
-    /* Manual policy: delegate to family's gain selection */
     rc = contract->apply_gain_fn( dev, gain_tenth_db );
     if( rc == SDRGG_OK ) {
       dev->tuning.gain_policy = gain_tenth_db;
     }
+  }
+
+  if( need_bulk_pause ) {
+    rtl::start_bulk( dev );
   }
 
   pthread_mutex_unlock( &dev->lock );

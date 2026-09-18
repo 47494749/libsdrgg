@@ -296,21 +296,33 @@ static int32_t i2c_session_write( i2c_session *s, uint8_t reg, uint8_t val ) {
 static int32_t i2c_session_read( i2c_session *s, uint8_t reg, uint8_t *data, uint8_t len ) {
   if( !s->active ) return SDRGG_ERR_IO;
   uint16_t addr = s->dev->identity.tuner_bus_addr;
-  uint8_t raw[32];
-  uint32_t total = (uint32_t)reg + (uint32_t)len;
-  if( total > 32 ) return SDRGG_ERR_PARAM;
+  int32_t rc;
 
-  int32_t rc = usb::control_read( s->dev, addr, 0x0600, raw, total );
-  if( rc != SDRGG_OK ) return rc;
-
-  /* Bit-reversal for R820T */
-  if( s->dev->identity.tuner_class == SDRGG_TUNER_R820T || s->dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
+  if( s->dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+      s->dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) {
     for( uint8_t i = 0; i < len; i++ ) {
-      data[i] = usb::bitrev8( raw[reg + i] );
+      uint8_t location = reg + i;
+      rc = usb::control_write( s->dev, addr, 0x0610, &location, 1 );
+      if( rc != SDRGG_OK ) return rc;
+      rc = usb::control_read( s->dev, addr, 0x0600, &data[i], 1 );
+      if( rc != SDRGG_OK ) return rc;
     }
   } else {
-    for( uint8_t i = 0; i < len; i++ ) {
-      data[i] = raw[reg + i];
+    uint8_t raw[32];
+    uint32_t total = (uint32_t)reg + (uint32_t)len;
+    if( total > 32 ) return SDRGG_ERR_PARAM;
+
+    rc = usb::control_read( s->dev, addr, 0x0600, raw, total );
+    if( rc != SDRGG_OK ) return rc;
+
+    if( s->dev->identity.tuner_class == SDRGG_TUNER_R820T || s->dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
+      for( uint8_t i = 0; i < len; i++ ) {
+        data[i] = usb::bitrev8( raw[reg + i] );
+      }
+    } else {
+      for( uint8_t i = 0; i < len; i++ ) {
+        data[i] = raw[reg + i];
+      }
     }
   }
   s->op_count++;
@@ -321,7 +333,23 @@ static int32_t i2c_session_read( i2c_session *s, uint8_t reg, uint8_t *data, uin
 
 int32_t rtl::enable_i2c_repeater( sdrgg_dev_t *dev, bool enable ) {
   uint8_t val = enable ? SDRGG_I2C_REPEATER_ON : SDRGG_I2C_REPEATER_OFF;
-  return submit_demod_write( dev, 1, 0x01, val, 1 );
+  int32_t rc = submit_demod_write( dev, 1, 0x01, val, 1 );
+
+  /* RTL2832U firmware needs time for the repeater gate to propagate.
+   * The demod write goes through the USB control transfer → 8051 dispatch
+   * → demod register write. The I2C repeater gate is in the demod hardware,
+   * not the 8051 firmware, so it takes effect after the register write
+   * completes. A confirmation readback (built into submit_demod_write)
+   * provides ~100µs of implicit delay which is usually sufficient.
+   * For FC0012 which is sensitive to timing, add an explicit delay
+   * after enabling to ensure the gate is fully open before I2C traffic. */
+  if( enable && rc == SDRGG_OK &&
+      ( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+        dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) ) {
+    usleep( 500 );
+  }
+
+  return rc;
 }
 
 /* Scoped tuner write: open session → transfer → close session */
@@ -338,7 +366,16 @@ int32_t tuner::write( sdrgg_dev_t *dev, const uint8_t *data, uint8_t len ) {
   return rc;
 }
 
-/* Scoped tuner read with bit-reversal for R820T */
+/* Scoped tuner read with protocol dispatch per tuner family.
+ *
+ * R820T: sequential bulk read — the chip auto-increments from reg 0,
+ *        so we read (reg+len) bytes and extract [reg..reg+len-1].
+ *        Readback is bit-reversed (R820T silicon quirk).
+ *
+ * FC0012/FC0013: random-access I2C — each register requires a
+ *        separate write-address + read-data transaction (two-phase).
+ *        The bulk sequential read does NOT work for these chips.
+ */
 int32_t tuner::read( sdrgg_dev_t *dev, uint8_t reg, uint8_t *data, uint8_t len ) {
   int32_t rc = rtl::enable_i2c_repeater( dev, true );
   if( rc != SDRGG_OK ) {
@@ -346,33 +383,46 @@ int32_t tuner::read( sdrgg_dev_t *dev, uint8_t reg, uint8_t *data, uint8_t len )
   }
 
   uint16_t addr = dev->identity.tuner_bus_addr;
-  uint8_t raw[32];
-  uint32_t total = (uint32_t)reg + (uint32_t)len;
-  if( total > 32 ) {
-    rtl::enable_i2c_repeater( dev, false );
-    return SDRGG_ERR_PARAM;
-  }
 
-  rc = usb::control_read( dev, addr, 0x0600, raw, total );
-
-  rtl::enable_i2c_repeater( dev, false );
-
-  if( rc != SDRGG_OK ) {
-    return rc;
-  }
-
-  /* R820T readback is bit-reversed; other tuners pass through */
-  if( dev->identity.tuner_class == SDRGG_TUNER_R820T || dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
+  if( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+      dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) {
+    /* Two-phase random read: write register address, then read one byte */
     for( uint8_t i = 0; i < len; i++ ) {
-      data[i] = usb::bitrev8( raw[reg + i] );
+      uint8_t location = reg + i;
+      rc = usb::control_write( dev, addr, 0x0610, &location, 1 );
+      if( rc != SDRGG_OK ) {
+        break;
+      }
+      rc = usb::control_read( dev, addr, 0x0600, &data[i], 1 );
+      if( rc != SDRGG_OK ) {
+        break;
+      }
     }
   } else {
-    for( uint8_t i = 0; i < len; i++ ) {
-      data[i] = raw[reg + i];
+    /* R820T sequential bulk read */
+    uint8_t raw[32];
+    uint32_t total = (uint32_t)reg + (uint32_t)len;
+    if( total > 32 ) {
+      rtl::enable_i2c_repeater( dev, false );
+      return SDRGG_ERR_PARAM;
+    }
+
+    rc = usb::control_read( dev, addr, 0x0600, raw, total );
+    if( rc == SDRGG_OK ) {
+      if( dev->identity.tuner_class == SDRGG_TUNER_R820T || dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
+        for( uint8_t i = 0; i < len; i++ ) {
+          data[i] = usb::bitrev8( raw[reg + i] );
+        }
+      } else {
+        for( uint8_t i = 0; i < len; i++ ) {
+          data[i] = raw[reg + i];
+        }
+      }
     }
   }
 
-  return SDRGG_OK;
+  rtl::enable_i2c_repeater( dev, false );
+  return rc;
 }
 
 /* Scoped single register write + shadow maintenance */
@@ -693,10 +743,28 @@ int32_t rtl::configure_fc0012( sdrgg_dev_t *dev ) {
   return SDRGG_OK;
 }
 
-/* Shutdown: halt streaming, demod power-down */
+/* Shutdown: halt streaming, restore demod to idle-but-powered state.
+ *
+ * ROM firmware analysis: SYS_DEMOD_CTL (0x3000) controls the demod power.
+ *   0xE8 = full active (ADC on, demod on, I2C on) — set by rtl::init()
+ *   0x20 = power-down (everything off, I2C bus dead)
+ *
+ * Writing 0x20 kills the I2C bus permanently for FC0012 because the
+ * demod hardware controls the repeater gate. The next open by any library
+ * finds the tuner unreachable until USB power cycle.
+ *
+ * Solution: leave the demod in the 0xE8 active state. The USB device
+ * close (fd close) will naturally put the chip in suspend, and the
+ * next open → rtl::init() will re-establish 0xE8 cleanly. */
 int32_t rtl::deinit( sdrgg_dev_t *dev ) {
   rtl::stop_bulk( dev );
-  submit_block_write( dev, SDRGG_BLOCK_SYS, SDRGG_SYS_DEMOD_CTL, 0x20, 1 );
+
+  /* Disable I2C repeater to leave the bus in a clean state.
+   * The firmware's I2C address cache (RAM_8) persists across
+   * opens. Closing the repeater ensures the next I2C sequence
+   * starts with a clean bus. */
+  rtl::enable_i2c_repeater( dev, false );
+
   return SDRGG_OK;
 }
 

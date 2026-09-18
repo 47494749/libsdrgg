@@ -1,5 +1,70 @@
 # libsdrgg Changelog
 
+## v1.3.1 — 2026-09-18
+
+### FC0012 I2C protocol fix and RTL2832U firmware-aware hardening
+
+Root cause analysis of the FC0012 "deaf tuner" problem revealed two distinct
+issues, both traced to how the RTL2832U 8051 firmware (mask ROM) handles I2C:
+
+**Bug 1 — Wrong I2C read protocol.** `tuner::read()` used bulk sequential read
+(one USB control transfer reads N bytes starting from register 0). This works
+for R820T because its I2C slave auto-increments the address pointer. FC0012
+requires two-phase random-access reads: write the register address first, then
+read one byte. The bulk sequential read returned garbage for FC0012.
+
+**Bug 2 — Streaming kills FC0012 RF reception.** The RTL2832U's usbdevfs async
+URB streaming (sdrgg's zero-copy bulk path) creates a timing conflict in the
+8051 firmware. The IE0 bulk-completion interrupt can preempt the CTF control
+transfer handler between the two phases of an FC0012 I2C read, corrupting the
+I2C state machine. R820T is unaffected because it uses a shadow register cache
+and never reads tuner registers during runtime.
+
+The 8051 ROM was dumped and disassembled (64KB, IDA Pro 8051/C517). Key finding:
+the firmware at address 0x072A caches the IICB block index in RAM_8 and skips
+I2C address re-setup for consecutive same-block transactions. Combined with the
+IE0 bulk interrupt preemption, this creates a race window specific to FC0012's
+two-phase read protocol.
+
+**Status:** Bug 1 is fully fixed. Bug 2 is mitigated with bulk-pause guards on
+`set_frequency` and `set_gain`, but streaming itself still corrupts FC0012 after
+~10 seconds. The usbdevfs async URB path is fundamentally incompatible with the
+FC0012's I2C requirements during active streaming. FC0012 devices should use
+librtlsdr as the streaming backend; sdrgg remains usable for configuration,
+register access, and short synchronous reads.
+
+### FC0012 fixes
+
+- **Two-phase I2C read** (`tuner::read`, `i2c_session_read`): FC0012/FC0013
+  now use write-address + read-data per register instead of bulk sequential.
+- **I2C repeater timing**: 500µs delay after enabling the repeater gate for
+  FC0012, allowing the RTL2832U demod hardware to propagate the gate state
+  before I2C traffic begins.
+- **VCO calibration delay**: 10ms settling time after VCO trigger (reg 0x0E),
+  matching the Linux kernel fc0012 driver. Prevents stale voltage readback.
+- **Gain latch prime**: `fc0012::init()` now sets minimum gain (-9.9 dB) during
+  cold start, working around the silicon bug where the first gain write after
+  power-on is silently ignored (librtlsdr PR#74).
+- **GPIO4 + GPIO7 detect**: `fc0012::detect()` tries GPIO4 then GPIO7 as reset
+  pin, covering both standard and RTL2838UHIDIR board variants.
+- **Firmware I2C cache invalidation**: detect sends a dummy I2C transaction to
+  address 0x00 before probing 0xC6, forcing the 8051's RAM_8 address cache to
+  mismatch and re-send the slave address.
+- **AGC support**: `fc0012::set_auto_gain()` implemented (clears reg 0x0D bit 3
+  for hardware LNA auto mode). Registered as `apply_auto_gain_fn` in the family
+  contract.
+- **Bulk-pause on I2C**: `set_frequency` and `set_gain` stop the bulk endpoint
+  before FC0012 I2C transactions and restart it after, preventing the IE0/CTF
+  firmware race condition.
+- **Clean shutdown**: `sdr::close()` calls `fc0012::set_auto_gain()` before
+  baseband deinit. `rtl::deinit()` no longer writes DEMOD_CTL=0x20 (power-down),
+  which was permanently killing the I2C bus for FC0012.
+
+### Backend changes
+
+- `sdr_backend.cpp` and `sdr_backend_sdrgg.cpp`: `supports_tuner_agc` now
+  includes FC0012 and FC0013 alongside R820T/R820T2.
+
 ## v1.3.0 — 2026-07-06
 
 ### New: FC0012 tuner support

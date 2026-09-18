@@ -21,7 +21,7 @@
 /* ---- Library version ---- */
 #define SDRGG_VERSION_MAJOR  1
 #define SDRGG_VERSION_MINOR  3
-#define SDRGG_VERSION_PATCH  0
+#define SDRGG_VERSION_PATCH  1
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -268,6 +268,7 @@ int32_t detect( sdrgg_dev_t *dev );
 int32_t init( sdrgg_dev_t *dev );
 int32_t set_freq( sdrgg_dev_t *dev, uint32_t freq_hz );
 int32_t set_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db );
+int32_t set_auto_gain( sdrgg_dev_t *dev );
 int32_t get_gains( const int16_t **gains, int32_t *count );
 
 const tuner_caps *get_caps( void );

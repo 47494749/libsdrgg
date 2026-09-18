@@ -171,7 +171,7 @@ make SDRGG_ENABLE_DIAGNOSTICS=1
 
 ## Build Outputs
 
-- `libsdrgg.so -> libsdrgg.so.1 -> libsdrgg.so.1.2.1`
+- `libsdrgg.so -> libsdrgg.so.1 -> libsdrgg.so.1.3.1`
 - `libsdrgg.a` via `make static`
 - `examples/enumerate_devices`
 - `examples/show_capabilities`
@@ -300,10 +300,11 @@ Exported tables:
 
 FC0012 specific helpers.
 
-- `detect(dev)`
-- `init(dev)`
-- `set_freq(dev, freq_hz)`
-- `set_gain(dev, gain_tenth_db)`
+- `detect(dev)` — probe with GPIO4/GPIO7 reset + firmware cache invalidation
+- `init(dev)` — cold start with gain latch prime (workaround for silicon bug)
+- `set_freq(dev, freq_hz)` — tune with VCO calibration (10ms settling)
+- `set_gain(dev, gain_tenth_db)` — manual LNA gain (5 steps: -9.9 to 19.2 dB)
+- `set_auto_gain(dev)` — enable hardware AGC (clear LNA override, reg 0x0D bit 3)
 - `get_gains(&gains, &count)`
 - `get_caps()`
 
@@ -489,6 +490,36 @@ If another application already owns the SDRs, stop it first. For example:
 ```bash
 sudo systemctl stop dump1090-gg
 ```
+
+## Known Limitations
+
+### FC0012 streaming incompatibility (v1.3.1)
+
+The Fitipower FC0012 tuner loses RF reception after ~10 seconds of async URB
+streaming through sdrgg's usbdevfs path. The tuner's I2C registers remain
+accessible but the analog front-end stops responding to RF signals. Only a
+USB power cycle (physical unplug or sysfs authorized toggle) recovers it.
+
+**Root cause:** The RTL2832U 8051 firmware (mask ROM, not modifiable) handles
+bulk USB transfers via the IE0 interrupt and I2C control transfers via the main
+CTF handler. The FC0012 requires two-phase I2C reads (write register address,
+then read data) which creates a vulnerability window between the two USB control
+transfers. When IE0 fires between them — which happens frequently during active
+streaming — the firmware's I2C state machine can enter an inconsistent state
+that corrupts the tuner configuration.
+
+R820T/R820T2 tuners are unaffected because they use a shadow register cache
+(no I2C reads during runtime) and support burst writes (single USB transfer per
+operation, no vulnerability window).
+
+**Workaround:** Use librtlsdr as the streaming backend for FC0012 devices.
+sdrgg remains usable for FC0012 register access, configuration, synchronous
+reads, and short streaming sessions (< 5 seconds).
+
+This is documented in the 8051 ROM disassembly analysis. The firmware code at
+0x072A (IICB block handler) caches the I2C slave address in internal RAM and
+skips re-setup for consecutive same-block transactions. Combined with IE0
+preemption, this amplifies the timing sensitivity for two-phase I2C protocols.
 
 ## Implementation Notes
 
