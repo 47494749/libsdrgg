@@ -81,36 +81,21 @@ static constexpr uint32_t BAND_SPLIT_HZ    = 300000000;
  * Timing: the repeater enable adds ~500µs delay (from the fix in
  * enable_i2c_repeater). The USB control transfer itself takes ~1ms
  * round-trip. Total per wire_write: ~2.5ms — safe for FC0012. */
+/* Wire-level I2C: the repeater gate is left OPEN for FC0012.
+ * librtlsdr keeps P1[01]=0x18 (gate open) at all times for FC0012.
+ * sdrgg now matches: the gate is opened once during init and stays open.
+ * Individual wire operations just ensure it's open, never close it. */
 static int32_t wire_write( sdrgg_dev_t *dev, uint8_t location, uint8_t content ) {
   uint8_t frame[2] = { location, content };
-
-  int32_t rc = rtl::enable_i2c_repeater( dev, true );
-  if( rc != SDRGG_OK ) {
-    return rc;
-  }
-
-  rc = usb::control_write( dev, WIRE_ADDR, 0x0610, frame, 2 );
-
-  rtl::enable_i2c_repeater( dev, false );
-  return rc;
+  rtl::enable_i2c_repeater( dev, true );
+  return usb::control_write( dev, WIRE_ADDR, 0x0610, frame, 2 );
 }
 
 static int32_t wire_read( sdrgg_dev_t *dev, uint8_t location, uint8_t *content ) {
-  int32_t rc = rtl::enable_i2c_repeater( dev, true );
-  if( rc != SDRGG_OK ) {
-    return rc;
-  }
-
-  rc = usb::control_write( dev, WIRE_ADDR, 0x0610, &location, 1 );
-  if( rc != SDRGG_OK ) {
-    rtl::enable_i2c_repeater( dev, false );
-    return rc;
-  }
-
-  rc = usb::control_read( dev, WIRE_ADDR, 0x0600, content, 1 );
-
-  rtl::enable_i2c_repeater( dev, false );
-  return rc;
+  rtl::enable_i2c_repeater( dev, true );
+  int32_t rc = usb::control_write( dev, WIRE_ADDR, 0x0610, &location, 1 );
+  if( rc != SDRGG_OK ) return rc;
+  return usb::control_read( dev, WIRE_ADDR, 0x0600, content, 1 );
 }
 
 /* Dispatch a sequence of wire commands.

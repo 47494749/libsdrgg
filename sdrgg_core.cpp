@@ -238,7 +238,7 @@ sdrgg_dev_t *open_path( sdrgg_ctx_t *ctx, const char *path ) {
   session.ctx = ctx;
 
   /* Phase A: Identity establishment */
-  int32_t fd = ::open( path, O_RDWR );
+  int32_t fd = ::open( path, O_RDWR | O_CLOEXEC );
   if( fd < 0 ) {
     return NULL;
   }
@@ -320,6 +320,16 @@ sdrgg_dev_t *open_path( sdrgg_ctx_t *ctx, const char *path ) {
       /* Run tuner startup */
       if( contract->startup_fn( dev ) != SDRGG_OK ) {
         break;
+      }
+
+      /* FC0012 requires the I2C repeater gate to stay OPEN during
+       * streaming. librtlsdr leaves it open (P1[01]=0x18) while sdrgg
+       * closes it after each I2C operation (P1[01]=0x10). With the
+       * gate closed, the FC0012 loses tuner state after ~10s of
+       * bulk streaming. Keeping it open matches librtlsdr behavior. */
+      if( contract->family == SDRGG_TUNER_FC0012 ||
+          contract->family == SDRGG_TUNER_FC0013 ) {
+        rtl::enable_i2c_repeater( dev, true );
       }
 
       detected = true;
@@ -719,8 +729,11 @@ int32_t stop_stream( sdrgg_dev_t *dev ) {
   /* Cancel in-flight URBs */
   usb::urb_cancel_all( dev );
 
-  /* Stop endpoint */
-  rtl::stop_bulk( dev );
+  /* Stop endpoint — skip for FC0012 because EPA_CTL reset kills the tuner */
+  if( dev->identity.tuner_class != SDRGG_TUNER_FC0012 &&
+      dev->identity.tuner_class != SDRGG_TUNER_FC0013 ) {
+    rtl::stop_bulk( dev );
+  }
 
   /* Release buffer pool */
   usb::urb_free( dev );

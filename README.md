@@ -491,36 +491,6 @@ If another application already owns the SDRs, stop it first. For example:
 sudo systemctl stop dump1090-gg
 ```
 
-## Known Limitations
-
-### FC0012 streaming incompatibility (v1.3.1)
-
-The Fitipower FC0012 tuner loses RF reception after ~10 seconds of async URB
-streaming through sdrgg's usbdevfs path. The tuner's I2C registers remain
-accessible but the analog front-end stops responding to RF signals. Only a
-USB power cycle (physical unplug or sysfs authorized toggle) recovers it.
-
-**Root cause:** The RTL2832U 8051 firmware (mask ROM, not modifiable) handles
-bulk USB transfers via the IE0 interrupt and I2C control transfers via the main
-CTF handler. The FC0012 requires two-phase I2C reads (write register address,
-then read data) which creates a vulnerability window between the two USB control
-transfers. When IE0 fires between them — which happens frequently during active
-streaming — the firmware's I2C state machine can enter an inconsistent state
-that corrupts the tuner configuration.
-
-R820T/R820T2 tuners are unaffected because they use a shadow register cache
-(no I2C reads during runtime) and support burst writes (single USB transfer per
-operation, no vulnerability window).
-
-**Workaround:** Use librtlsdr as the streaming backend for FC0012 devices.
-sdrgg remains usable for FC0012 register access, configuration, synchronous
-reads, and short streaming sessions (< 5 seconds).
-
-This is documented in the 8051 ROM disassembly analysis. The firmware code at
-0x072A (IICB block handler) caches the I2C slave address in internal RAM and
-skips re-setup for consecutive same-block transactions. Combined with IE0
-preemption, this amplifies the timing sensitivity for two-phase I2C protocols.
-
 ## Implementation Notes
 
 - `R820T/R820T2` logic uses a three-stage model for RF path, PLL synthesis, and analog profile lowering

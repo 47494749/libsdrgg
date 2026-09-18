@@ -26,12 +26,13 @@ I2C address re-setup for consecutive same-block transactions. Combined with the
 IE0 bulk interrupt preemption, this creates a race window specific to FC0012's
 two-phase read protocol.
 
-**Status:** Bug 1 is fully fixed. Bug 2 is mitigated with bulk-pause guards on
-`set_frequency` and `set_gain`, but streaming itself still corrupts FC0012 after
-~10 seconds. The usbdevfs async URB path is fundamentally incompatible with the
-FC0012's I2C requirements during active streaming. FC0012 devices should use
-librtlsdr as the streaming backend; sdrgg remains usable for configuration,
-register access, and short synchronous reads.
+**Status:** Both bugs fully fixed. Bug 2 root cause (found via usbmon capture):
+`stop_bulk` writes EPA_CTL=0x1002 during stream teardown, which resets the USB
+endpoint in a way that permanently corrupts FC0012 tuner state. Fix: skip
+EPA_CTL reset for FC0012 in `stop_stream`, use DEMOD_CTL=0x20 (demod power-down)
+in `deinit` instead. This matches librtlsdr's shutdown sequence exactly. The I2C
+repeater gate is also kept open during streaming (P1[01]=0x18) to match librtlsdr.
+FC0012 streaming via sdrgg is now fully functional.
 
 ### FC0012 fixes
 

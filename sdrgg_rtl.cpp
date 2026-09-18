@@ -758,13 +758,10 @@ int32_t rtl::configure_fc0012( sdrgg_dev_t *dev ) {
  * next open → rtl::init() will re-establish 0xE8 cleanly. */
 int32_t rtl::deinit( sdrgg_dev_t *dev ) {
   rtl::stop_bulk( dev );
-
-  /* Disable I2C repeater to leave the bus in a clean state.
-   * The firmware's I2C address cache (RAM_8) persists across
-   * opens. Closing the repeater ensures the next I2C sequence
-   * starts with a clean bus. */
-  rtl::enable_i2c_repeater( dev, false );
-
+  /* Power-down demod — matches librtlsdr's rtlsdr_deinit_baseband.
+   * Writing 0x20 cleanly shuts down the demod hardware including
+   * the endpoint and DMA engine. The next open re-initializes with 0xE8. */
+  submit_block_write( dev, SDRGG_BLOCK_SYS, SDRGG_SYS_DEMOD_CTL, 0x20, 1 );
   return SDRGG_OK;
 }
 

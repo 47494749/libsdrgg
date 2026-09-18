@@ -109,6 +109,11 @@ int32_t usb::bulk_read( sdrgg_dev_t *dev, uint8_t *buf, uint32_t len, uint32_t t
 int32_t usb::claim( sdrgg_dev_t *dev ) {
   int32_t interface = 0;
 
+  /* Query kernel capabilities — libusb does this and it may initialize
+   * internal kernel state needed for correct URB handling. */
+  uint32_t caps = 0;
+  ioctl( dev->identity.fd, USBDEVFS_GET_CAPABILITIES, &caps );
+
   /* Detach kernel driver if attached */
   struct usbdevfs_getdriver getdrv = {};
   getdrv.interface = interface;
@@ -190,6 +195,7 @@ int32_t usb::urb_alloc( sdrgg_dev_t *dev, uint32_t count, uint32_t buf_size ) {
     memset( u->urb, 0, sizeof( *u->urb ) );
     u->urb->type = USBDEVFS_URB_TYPE_BULK;
     u->urb->endpoint = SDRGG_USB_EPA;
+    u->urb->flags = USBDEVFS_URB_BULK_CONTINUATION;
     u->urb->buffer = u->buffer;
     u->urb->buffer_length = buf_size;
     /* usercontext points back to our tracking struct */
@@ -222,9 +228,15 @@ int32_t usb::urb_submit( sdrgg_dev_t *dev, sdrgg_urb_t *u ) {
     return SDRGG_ERR_BUSY;
   }
 
-  /* Reset URB fields for resubmission */
+  /* Reset URB fields for resubmission.
+   * BULK_CONTINUATION tells the kernel to NOT reset the data toggle bit.
+   * Without this, each resubmitted URB is treated as an independent transfer,
+   * and the host-device data toggle can get out of sync after many URBs.
+   * libusb sets this flag on all URBs (when the kernel supports it).
+   * Missing this flag was causing FC0012 tuner corruption during streaming. */
   u->urb->actual_length = 0;
   u->urb->status = 0;
+  u->urb->flags = USBDEVFS_URB_BULK_CONTINUATION;
 
   int32_t rc = ioctl( dev->identity.fd, USBDEVFS_SUBMITURB, u->urb );
   if( rc < 0 ) {
