@@ -1,5 +1,55 @@
 # libsdrgg Changelog
 
+## v1.4.0 — 2026-09-21
+
+### Multi-consumer IQ ring buffer engine
+
+Replaced the legacy single-callback streaming path with a lock-free
+single-writer, multi-reader ring buffer architecture. Multiple consumers
+(subscribers) can independently tap the same IQ stream without interfering
+with each other.
+
+- **New module: `sdrgg_ring.cpp`** — ring buffer engine with per-device USB
+  reader thread, 4 MB IQ ring (SDRGG_RING_SIZE, ~1s at 2 MSPS), and up to 8
+  independent subscriber threads (SDRGG_MAX_SUBSCRIBERS)
+- **Multi-consumer API** (`subscribe`, `unsubscribe`): add/remove IQ data
+  consumers at runtime; each gets its own callback thread and read pointer
+- **`start_stream` / `stop_stream`** now delegate to `ring_engine::start` /
+  `ring_engine::stop`; legacy single-callback path disabled (`#if 0`)
+- **Backward compatible**: existing `start_stream(dev, cfg, callback, ctx)`
+  maps the callback to subscriber slot 0 automatically
+
+### USB hot-plug detection and health tracking
+
+- **Device health state machine** (`device_health` enum): OK → USB_ERRORS →
+  DISCONNECTED → DEAD, tracked via atomic `dev->health`
+- **Disconnect detection** in `control_write`, `control_read`, and `bulk_read`:
+  errno ENODEV/ENXIO/ESHUTDOWN triggers health transition and hotplug callback
+- **`sdr::is_alive(dev)`**: returns true if device is responding
+- **`sdr::set_hotplug_callback(ctx, cb, data)`**: register per-context callback
+  for DISCONNECT/RECONNECT/USB_ERROR events
+- **Safe close**: `sdr::close()` skips I2C tuner shutdown and baseband deinit
+  when device is disconnected (avoids hanging on dead USB)
+
+### Debug logging framework
+
+- **New module: `sdrgg_debug_log.cpp` / `sdrgg_debug_log.h`** — timestamped
+  register-level USB I/O trace logging with block name resolution (DEMOD, USB,
+  SYS, TUNER)
+- Opt-in at runtime via `sdrgg_debug_log_active()`; zero overhead when inactive
+
+### FC0012 bulk-pause for live I2C operations
+
+- `set_frequency` and `set_gain` now correctly pause/resume the USB bulk
+  endpoint (`rtl::stop_bulk` / `rtl::start_bulk`) during FC0012/FC0013 I2C
+  transactions while streaming, preventing the 8051 firmware IE0/CTF race
+- Uses proper RTL demod bulk control instead of raw URB resubmit
+
+### Build
+
+- Makefile updated: added `sdrgg_ring.cpp` and `sdrgg_debug_log.cpp` to SRCS,
+  `sdrgg_debug_log.h` to HEADERS
+
 ## v1.3.1 — 2026-09-18
 
 ### FC0012 I2C protocol fix and RTL2832U firmware-aware hardening

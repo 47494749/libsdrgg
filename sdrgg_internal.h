@@ -175,18 +175,63 @@ struct tuning_context {
   int32_t  last_rate_result;     /* SDRGG_OK or error from last rate commit */
 };
 
-/* Async streaming engine state */
+/* ======================================================================
+*  IQ ring buffer (lock-free single-writer, multi-reader)
+*
+*  The USB reader thread writes IQ data into the ring.
+*  Consumer threads (subscribers) each maintain their own read pointer.
+*  If a consumer falls behind and the writer laps it, that consumer
+*  loses samples — other consumers are unaffected.
+* ====================================================================== */
+
+#define SDRGG_RING_SIZE        (4 * 1024 * 1024)  /* 4 MB = ~1s at 2 MSPS */
+#define SDRGG_MAX_SUBSCRIBERS  8
+
+struct iq_subscriber {
+  bool                active;
+  sdrgg_stream_cb_t   callback;
+  void               *user_ctx;
+  sdrgg_dev_t        *dev;            /* back-pointer for ring access in consumer thread */
+  pthread_t           thread;
+  bool                thread_started;
+  std::atomic<bool>   cancel;
+  uint32_t            read_pos;       /* this subscriber's read position */
+  uint32_t            sequence;       /* buffer sequence counter */
+};
+
+struct iq_ring {
+  uint8_t            *data;           /* ring buffer (IQ interleaved) */
+  uint32_t            size;           /* ring size in bytes (power of 2) */
+  std::atomic<uint32_t> write_pos;    /* writer position (updated atomically) */
+  iq_subscriber       subs[SDRGG_MAX_SUBSCRIBERS];
+  pthread_mutex_t     sub_lock;       /* protects subscribe/unsubscribe */
+};
+
+/* Async streaming engine state (refactored: per-device reader thread) */
 struct stream_engine {
   std::atomic<bool> active;
+  pthread_t reader_thread;            /* dedicated reader thread for this device */
+  bool reader_started;
+  std::atomic<bool> cancel_requested;
+  iq_ring ring;                       /* IQ ring buffer for this device */
+  uint32_t sequence;                  /* global buffer sequence */
+
+  /* Legacy single-callback (for backward compat, mapped to sub[0]) */
   sdrgg_stream_cb_t callback;
   void *user_data;
-  uint32_t sequence;
-  std::atomic<bool> cancel_requested;
 };
 
 /* ======================================================================
 *  Top-level device handle (composes domain types)
 * ====================================================================== */
+
+/* Device health state */
+enum device_health {
+  DEV_HEALTH_OK = 0,
+  DEV_HEALTH_USB_ERRORS,   /* transient USB errors accumulating */
+  DEV_HEALTH_DISCONNECTED, /* device physically removed */
+  DEV_HEALTH_DEAD          /* unrecoverable — needs close+reopen */
+};
 
 struct sdrgg_dev {
   device_identity    identity;
@@ -197,6 +242,11 @@ struct sdrgg_dev {
   stream_engine      stream;
   stream_pipeline    pipeline;
   pthread_mutex_t    lock;
+
+  /* Hot-plug health tracking */
+  std::atomic<int32_t> usb_error_count;   /* consecutive USB errors */
+  std::atomic<device_health> health;
+  char usb_sysfs_path[64];               /* e.g. "1-1.1.4" for rebind */
 };
 
 /* ======================================================================
@@ -213,6 +263,10 @@ struct sdrgg_ctx {
   pthread_t event_thread;
   std::atomic<bool> event_running;
   std::atomic<int32_t> streaming_count;
+
+  /* Hot-plug callback (type from sdrgg.h: void(*)(sdrgg_dev_t*,int,void*)) */
+  void (*hotplug_cb)( sdrgg_dev_t *, int, void * );
+  void *hotplug_ctx;
 };
 
 /* ======================================================================

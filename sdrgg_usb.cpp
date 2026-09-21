@@ -28,12 +28,23 @@
 #include <linux/usb/ch9.h>
 
 #include "sdrgg_internal.h"
+#include "sdrgg_debug_log.h"
+
+static const char *block_name(uint8_t b) {
+  switch (b) {
+    case 0: return "DEMOD"; case 1: return "USB"; case 2: return "SYS"; case 3: return "TUNER";
+    default: return "?";
+  }
+}
 
 /* ======================================================================
 *  SUB-LAYER 1: Control path (synchronous USB transfers)
 * ====================================================================== */
 
 int32_t usb::control_write( sdrgg_dev_t *dev, uint16_t value, uint16_t index, const uint8_t *data, uint16_t len ) {
+  uint64_t t0 = 0;
+  if( sdrgg_debug_log_active() ) t0 = sdrgg_debug_time_us();
+
   struct usbdevfs_ctrltransfer ctrl = {
     .bRequestType = SDRGG_CTRL_OUT,
     .bRequest = 0,
@@ -45,13 +56,36 @@ int32_t usb::control_write( sdrgg_dev_t *dev, uint16_t value, uint16_t index, co
   };
 
   int32_t rc = ioctl( dev->identity.fd, USBDEVFS_CONTROL, &ctrl );
-  if( rc < 0 ) {
-    return SDRGG_ERR_USB;
+  int32_t ret = (rc < 0) ? SDRGG_ERR_USB : SDRGG_OK;
+
+  /* Hot-plug: detect device removal */
+  if( rc < 0 && (errno == ENODEV || errno == ENXIO || errno == ESHUTDOWN) ) {
+    dev->usb_error_count.fetch_add(1);
+    if( dev->health.load() == DEV_HEALTH_OK ) {
+      dev->health.store( DEV_HEALTH_DISCONNECTED );
+      fprintf( stderr, "sdrgg: slot %d USB disconnect detected (write reg 0x%04X)\n",
+               dev->identity.slot_index, value );
+      sdrgg_debug_log_event( dev->identity.slot_index, "HOTPLUG", "DISCONNECT write reg=0x%04X errno=%d", value, errno );
+      sdrgg_ctx_t *ctx = dev->identity.ctx;
+      if( ctx && ctx->hotplug_cb )
+        ctx->hotplug_cb( dev, SDRGG_EVENT_DISCONNECT, ctx->hotplug_ctx );
+    }
+  } else if( rc >= 0 ) {
+    dev->usb_error_count.store(0);
   }
-  return SDRGG_OK;
+
+  if( t0 ) {
+    uint8_t block = (index >> 8) & 0xFF;
+    sdrgg_debug_log_write( dev->identity.slot_index, "W", block_name(block),
+                           value, data, len > 8 ? 8 : len, ret, t0 );
+  }
+  return ret;
 }
 
 int32_t usb::control_read( sdrgg_dev_t *dev, uint16_t value, uint16_t index, uint8_t *data, uint16_t len ) {
+  uint64_t t0 = 0;
+  if( sdrgg_debug_log_active() ) t0 = sdrgg_debug_time_us();
+
   struct usbdevfs_ctrltransfer ctrl = {
     .bRequestType = SDRGG_CTRL_IN,
     .bRequest = 0,
@@ -63,10 +97,30 @@ int32_t usb::control_read( sdrgg_dev_t *dev, uint16_t value, uint16_t index, uin
   };
 
   int32_t rc = ioctl( dev->identity.fd, USBDEVFS_CONTROL, &ctrl );
-  if( rc < 0 ) {
-    return SDRGG_ERR_USB;
+  int32_t ret = (rc < 0) ? SDRGG_ERR_USB : SDRGG_OK;
+
+  /* Hot-plug: detect device removal */
+  if( rc < 0 && (errno == ENODEV || errno == ENXIO || errno == ESHUTDOWN) ) {
+    dev->usb_error_count.fetch_add(1);
+    if( dev->health.load() == DEV_HEALTH_OK ) {
+      dev->health.store( DEV_HEALTH_DISCONNECTED );
+      fprintf( stderr, "sdrgg: slot %d USB disconnect detected (read reg 0x%04X)\n",
+               dev->identity.slot_index, value );
+      sdrgg_debug_log_event( dev->identity.slot_index, "HOTPLUG", "DISCONNECT read reg=0x%04X errno=%d", value, errno );
+      sdrgg_ctx_t *ctx = dev->identity.ctx;
+      if( ctx && ctx->hotplug_cb )
+        ctx->hotplug_cb( dev, SDRGG_EVENT_DISCONNECT, ctx->hotplug_ctx );
+    }
+  } else if( rc >= 0 ) {
+    dev->usb_error_count.store(0);
   }
-  return SDRGG_OK;
+
+  if( t0 ) {
+    uint8_t block = (index >> 8) & 0xFF;
+    sdrgg_debug_log_write( dev->identity.slot_index, "R", block_name(block),
+                           value, data, (ret == SDRGG_OK && len <= 8) ? len : 0, ret, t0 );
+  }
+  return ret;
 }
 
 /* ---- Synchronous bulk (used only by read_sync path) ---- */
@@ -90,7 +144,19 @@ int32_t usb::bulk_read( sdrgg_dev_t *dev, uint8_t *buf, uint32_t len, uint32_t t
 
     int32_t rc = ioctl( dev->identity.fd, USBDEVFS_BULK, &bulk );
     if( rc < 0 ) {
-      /* If we already got some data, return what we have */
+      /* Hot-plug: detect device removal during bulk read */
+      if( errno == ENODEV || errno == ENXIO || errno == ESHUTDOWN ) {
+        dev->usb_error_count.fetch_add(1);
+        if( dev->health.load() == DEV_HEALTH_OK ) {
+          dev->health.store( DEV_HEALTH_DISCONNECTED );
+          fprintf( stderr, "sdrgg: slot %d USB disconnect detected (bulk_read)\n",
+                   dev->identity.slot_index );
+          sdrgg_debug_log_event( dev->identity.slot_index, "HOTPLUG", "DISCONNECT bulk_read errno=%d", errno );
+          sdrgg_ctx_t *ctx = dev->identity.ctx;
+          if( ctx && ctx->hotplug_cb )
+            ctx->hotplug_cb( dev, SDRGG_EVENT_DISCONNECT, ctx->hotplug_ctx );
+        }
+      }
       if( total > 0 ) break;
       if( actual ) *actual = 0;
       return SDRGG_ERR_IO;

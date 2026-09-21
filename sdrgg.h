@@ -143,13 +143,37 @@ int32_t get_gain( sdrgg_dev_t *dev, int32_t *gain_tenth_db );
 int32_t set_freq_correction( sdrgg_dev_t *dev, int32_t ppm );
 int32_t set_digital_agc( sdrgg_dev_t *dev, bool enable );
 
+/* Legacy: start stream with single callback (backward compatible).
+ * Internally starts the reader thread + subscribes callback as sub[0]. */
 int32_t start_stream( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_stream_cb_t callback, void *user_ctx );
 int32_t stop_stream( sdrgg_dev_t *dev );
 int32_t read_sync( sdrgg_dev_t *dev, uint8_t *buf, uint32_t max_bytes, uint32_t timeout_ms );
 
+/* Multi-consumer streaming API.
+ * start_stream begins USB acquisition into a ring buffer.
+ * subscribe/unsubscribe add/remove consumers that receive IQ data
+ * from the ring via their own callback thread.
+ * Multiple consumers can read the same stream independently. */
+int32_t subscribe( sdrgg_dev_t *dev, sdrgg_stream_cb_t callback, void *user_ctx );
+int32_t unsubscribe( sdrgg_dev_t *dev, int32_t handle );
+
 sdrgg_tuner_type_t get_tuner_type( sdrgg_dev_t *dev );
 int32_t get_devinfo( sdrgg_dev_t *dev, sdrgg_devinfo_t *info );
 uint32_t get_xtal_freq( sdrgg_dev_t *dev );
+
+/* Device health check — returns true if device is responding */
+bool is_alive( sdrgg_dev_t *dev );
+
+/* Hot-plug event types */
+#define SDRGG_EVENT_DISCONNECT  1  /* device USB link lost */
+#define SDRGG_EVENT_RECONNECT   2  /* device reappeared after disconnect */
+#define SDRGG_EVENT_USB_ERROR   3  /* transient USB error */
+
+/* Hot-plug callback: called from internal thread when device state changes */
+typedef void (*sdrgg_hotplug_cb_t)( sdrgg_dev_t *dev, int event, void *ctx );
+
+/* Register hot-plug callback (one per context) */
+void set_hotplug_callback( sdrgg_ctx_t *ctx, sdrgg_hotplug_cb_t cb, void *ctx_data );
 
 } /* namespace sdr */
 

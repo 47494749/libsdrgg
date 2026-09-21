@@ -37,9 +37,9 @@ EXAMPLE_SRCS = $(EXAMPLES_DIR)/enumerate_devices.cpp $(EXAMPLES_DIR)/show_capabi
 EXAMPLE_BINS = $(EXAMPLE_SRCS:.cpp=)
 EXAMPLE_RPATH = -Wl,-rpath,'$$ORIGIN/..'
 
-SRCS = sdrgg_usb.cpp sdrgg_rtl.cpp sdrgg_r820t.cpp sdrgg_fc0012.cpp sdrgg_tuner_caps.cpp sdrgg_core.cpp sdrgg_reset.cpp
+SRCS = sdrgg_usb.cpp sdrgg_rtl.cpp sdrgg_r820t.cpp sdrgg_fc0012.cpp sdrgg_tuner_caps.cpp sdrgg_core.cpp sdrgg_ring.cpp sdrgg_reset.cpp sdrgg_debug_log.cpp
 OBJS = $(SRCS:.cpp=.o)
-HEADERS = sdrgg.h sdrgg_internal.h sdrgg_r820t_internal.h sdrgg_fc0012_internal.h
+HEADERS = sdrgg.h sdrgg_internal.h sdrgg_r820t_internal.h sdrgg_fc0012_internal.h sdrgg_debug_log.h
 
 LIB_STATIC = libsdrgg.a
 LIB_SHARED = libsdrgg.so

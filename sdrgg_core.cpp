@@ -252,6 +252,9 @@ sdrgg_dev_t *open_path( sdrgg_ctx_t *ctx, const char *path ) {
   dev->baseband.oscillator_hz = SDRGG_XTAL_FREQ;
   dev->identity.bulk_endpoint = SDRGG_USB_EPA;
   dev->baseband.freq_offset_ppm = 0;
+  dev->usb_error_count.store(0);
+  dev->health.store(DEV_HEALTH_OK);
+  dev->usb_sysfs_path[0] = '\0';
   pthread_mutex_init( &dev->lock, NULL );
 
   strncpy( dev->identity.info.path, path, sizeof( dev->identity.info.path ) - 1 );
@@ -392,29 +395,26 @@ void close( sdrgg_dev_t *dev ) {
    * Must stop streaming BEFORE any I2C operations (tuner shutdown),
    * otherwise the 8051 firmware's bulk interrupt handler can corrupt
    * I2C transactions in progress. */
-  if( dev->stream.active ) {
+  if( dev->stream.active.load() ) {
     stop_stream( dev );
   }
 
-  /* Wait for any in-flight USB transfers and I2C operations to complete.
-   * The 8051 I2C handler (code_FBA) retries up to 5 times on NAK with
-   * ~200µs per retry. Total worst case: 5 * 200µs * 2 (read+write) = 2ms.
-   * Add margin for USB round-trip. */
-  usleep( 5000 );
+  bool disconnected = ( dev->health.load() == DEV_HEALTH_DISCONNECTED );
 
-  /* Tuner dormancy transition */
-  if( dev->identity.tuner_class == SDRGG_TUNER_R820T || dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
-    r820t::standby( dev );
-  } else if( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
-             dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) {
-    /* FC0012 shutdown: switch LNA back to auto mode (register 0x0D bit 3 clear)
-     * and set a known gain state. This leaves the tuner in a clean state
-     * for the next open, avoiding the gain latch bug on re-open. */
-    fc0012::set_auto_gain( dev );
+  if( !disconnected ) {
+    usleep( 5000 );
+
+    /* Tuner dormancy transition */
+    if( dev->identity.tuner_class == SDRGG_TUNER_R820T || dev->identity.tuner_class == SDRGG_TUNER_R820T2 ) {
+      r820t::standby( dev );
+    } else if( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+               dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) {
+      fc0012::set_auto_gain( dev );
+    }
+
+    /* Baseband shutdown */
+    rtl::deinit( dev );
   }
-
-  /* Baseband shutdown */
-  rtl::deinit( dev );
 
   /* Release USB resources */
   usb::release( dev );
@@ -439,7 +439,14 @@ int32_t set_frequency( sdrgg_dev_t *dev, uint32_t freq_hz, uint32_t *actual_hz )
   /* Record requested state before hardware attempt */
   dev->tuning.requested_freq_hz = freq_hz;
 
-  bool need_bulk_pause = false;
+  bool need_bulk_pause = ( dev->stream.active.load() &&
+                           ( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+                             dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) );
+
+  if( need_bulk_pause ) {
+    rtl::stop_bulk( dev );
+    usleep( 5000 );
+  }
 
   int32_t rc;
   if( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ) {
@@ -459,7 +466,8 @@ int32_t set_frequency( sdrgg_dev_t *dev, uint32_t freq_hz, uint32_t *actual_hz )
   }
 
   if( need_bulk_pause ) {
-    usb::urb_submit_all( dev );
+    usleep( 5000 );
+    rtl::start_bulk( dev );
   }
 
   pthread_mutex_unlock( &dev->lock );
@@ -505,7 +513,14 @@ int32_t set_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db ) {
     return SDRGG_ERR_PARAM;
   }
 
-  bool need_bulk_pause = false;
+  bool need_bulk_pause = ( dev->stream.active.load() &&
+                           ( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+                             dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) );
+
+  if( need_bulk_pause ) {
+    rtl::stop_bulk( dev );
+    usleep( 5000 );
+  }
 
   if( gain_tenth_db == SDRGG_GAIN_AUTO ) {
     if( !contract->apply_auto_gain_fn ) {
@@ -524,7 +539,8 @@ int32_t set_gain( sdrgg_dev_t *dev, int32_t gain_tenth_db ) {
   }
 
   if( need_bulk_pause ) {
-    usb::urb_submit_all( dev );
+    usleep( 5000 );
+    rtl::start_bulk( dev );
   }
 
   pthread_mutex_unlock( &dev->lock );
@@ -559,7 +575,25 @@ int32_t set_digital_agc( sdrgg_dev_t *dev, bool enable ) {
 *  Streaming (async URB + epoll event loop)
 * ====================================================================== */
 
+int32_t start_stream( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_stream_cb_t callback, void *user_ctx );
+int32_t stop_stream( sdrgg_dev_t *dev );
+
+} /* close namespace sdr temporarily for ring_engine forward declarations */
+
+namespace ring_engine {
+  int32_t start( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg,
+                 sdrgg_stream_cb_t callback, void *user_ctx );
+  int32_t stop( sdrgg_dev_t *dev );
+}
+
+namespace sdr {
+
 int32_t start_stream( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_stream_cb_t callback, void *user_ctx ) {
+  return ring_engine::start( dev, cfg, callback, user_ctx );
+}
+
+#if 0  /* Legacy direct-callback path (disabled) */
+int32_t start_stream_legacy( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_stream_cb_t callback, void *user_ctx ) {
   if( !dev || !callback ) {
     return SDRGG_ERR_PARAM;
   }
@@ -676,43 +710,10 @@ int32_t start_stream( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sdrgg_str
 
   return SDRGG_OK;
 }
+#endif /* Legacy direct-callback path */
 
 int32_t stop_stream( sdrgg_dev_t *dev ) {
-  if( !dev || !dev->stream.active ) {
-    return SDRGG_OK;
-  }
-
-  sdrgg_ctx_t *ctx = dev->identity.ctx;
-
-  /* Signal cancellation */
-  dev->stream.cancel_requested = true;
-  dev->stream.active = false;
-
-  /* Remove from event loop */
-  if( ctx ) {
-    usb::event_loop_remove_dev( ctx, dev );
-  }
-
-  /* Cancel in-flight URBs */
-  usb::urb_cancel_all( dev );
-
-  /* Stop endpoint — skip for FC0012 because EPA_CTL reset kills the tuner */
-  if( dev->identity.tuner_class != SDRGG_TUNER_FC0012 &&
-      dev->identity.tuner_class != SDRGG_TUNER_FC0013 ) {
-    rtl::stop_bulk( dev );
-  }
-
-  /* Release buffer pool */
-  usb::urb_free( dev );
-
-  /* Stop event loop if no more active streams */
-  if( ctx ) {
-    if( ctx->streaming_count.load() == 0 ) {
-      usb::event_loop_stop( ctx );
-    }
-  }
-
-  return SDRGG_OK;
+  return ring_engine::stop( dev );
 }
 
 /* ---- Synchronous read ---- */
@@ -722,7 +723,7 @@ int32_t read_sync( sdrgg_dev_t *dev, uint8_t *buf, uint32_t max_bytes, uint32_t 
     return SDRGG_ERR_PARAM;
   }
 
-  if( dev->stream.active ) {
+  if( dev->stream.active.load() ) {
     return SDRGG_ERR_BUSY;
   }
 
@@ -760,6 +761,17 @@ int32_t get_devinfo( sdrgg_dev_t *dev, sdrgg_devinfo_t *info ) {
 
 uint32_t get_xtal_freq( sdrgg_dev_t *dev ) {
   return dev ? dev->baseband.oscillator_hz : 0;
+}
+
+bool is_alive( sdrgg_dev_t *dev ) {
+  if( !dev ) return false;
+  return dev->health.load() == DEV_HEALTH_OK;
+}
+
+void set_hotplug_callback( sdrgg_ctx_t *ctx, sdrgg_hotplug_cb_t cb, void *ctx_data ) {
+  if( !ctx ) return;
+  ctx->hotplug_cb = cb;
+  ctx->hotplug_ctx = ctx_data;
 }
 
 int32_t get_tuner_caps( sdrgg_dev_t *dev, const tuner_caps **caps ) {

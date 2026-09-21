@@ -12,6 +12,8 @@ Created by Luigi Origa.
 - direct tuner I2C register access
 - low-level tuning and gain control for supported tuners
 - asynchronous zero-copy bulk streaming using `usbdevfs` URBs
+- multi-consumer IQ ring buffer: multiple subscribers tap the same stream independently
+- USB hot-plug detection with health state tracking and disconnect callbacks
 - multi-device coordination through a single epoll-based event loop
 - capability introspection for implemented and planned tuner families
 
@@ -70,12 +72,15 @@ Internal layer split:
 - `sdrgg_usb.cpp`: raw Linux USB transport, URB allocation, event loop integration
 - `sdrgg_rtl.cpp`: RTL2832U baseband and demodulator programming
 - `sdrgg_core.cpp`: device lifecycle, orchestration, policy dispatch, generic API
+- `sdrgg_ring.cpp`: multi-consumer IQ ring buffer engine (lock-free SPSC writer, multi-reader)
 - `sdrgg_r820t.cpp`: R820T/R820T2 tuner logic
 - `sdrgg_fc0012.cpp`: FC0012 tuner logic
 - `sdrgg_reset.cpp`: multi-level device reset operations (demod, tuner, USB, power)
+- `sdrgg_debug_log.cpp`: optional timestamped USB register I/O trace logging
 - `sdrgg_tuner_caps.cpp`: static capability database for implemented and planned tuners
 - `sdrgg.h`: public API surface
 - `sdrgg_internal.h`: private state model and transport constants
+- `sdrgg_debug_log.h`: debug log interface
 - `sdrgg_r820t_internal.h`: R820T-specific internal structures and register definitions
 - `sdrgg_fc0012_internal.h`: FC0012-specific internal structures and register definitions
 
@@ -90,12 +95,15 @@ Important design choices:
 
 - `sdrgg.h`: public API
 - `sdrgg_internal.h`: internal structs and constants
-- `sdrgg_usb.cpp`: USB control/bulk transport
+- `sdrgg_usb.cpp`: USB control/bulk transport with hot-plug detection
 - `sdrgg_rtl.cpp`: RTL2832U setup and baseband programming
 - `sdrgg_core.cpp`: open/close/configure/stream orchestration
+- `sdrgg_ring.cpp`: multi-consumer IQ ring buffer engine
 - `sdrgg_r820t.cpp`: R820T/R820T2 tuning, gain and bandwidth logic
 - `sdrgg_fc0012.cpp`: FC0012 tuning and gain logic
 - `sdrgg_reset.cpp`: multi-level device reset (demod soft reset, tuner shadow writeback, USB reset, power cycle)
+- `sdrgg_debug_log.cpp`: optional USB register I/O trace logging
+- `sdrgg_debug_log.h`: debug log interface
 - `sdrgg_tuner_caps.cpp`: capability descriptors for all tuner families modeled so far
 - `examples/enumerate_devices.cpp`: minimal device enumeration example
 - `examples/show_capabilities.cpp`: capability introspection example
@@ -171,7 +179,7 @@ make SDRGG_ENABLE_DIAGNOSTICS=1
 
 ## Build Outputs
 
-- `libsdrgg.so -> libsdrgg.so.1 -> libsdrgg.so.1.3.1`
+- `libsdrgg.so -> libsdrgg.so.1 -> libsdrgg.so.1.4.0`
 - `libsdrgg.a` via `make static`
 - `examples/enumerate_devices`
 - `examples/show_capabilities`
@@ -266,6 +274,13 @@ Streaming:
 - `start_stream(dev, &cfg, callback, user_ctx)`
 - `stop_stream(dev)`
 - `read_sync(dev, buf, max_bytes, timeout_ms)`
+- `subscribe(dev, callback, user_ctx)` — add a consumer to the IQ ring
+- `unsubscribe(dev, handle)` — remove a consumer
+
+Health and hot-plug:
+
+- `is_alive(dev)` — returns true if device is responding
+- `set_hotplug_callback(ctx, cb, data)` — register disconnect/reconnect callback
 
 Introspection:
 
