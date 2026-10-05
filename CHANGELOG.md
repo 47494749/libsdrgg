@@ -1,5 +1,33 @@
 # libsdrgg Changelog
 
+## v1.4.1 — 2026-10-05
+
+### FC0012 multi-device demod protection
+
+Root cause: in setups with both R820T and FC0012 dongles, opening an R820T
+device calls `rtl::configure_r820t()` which writes Low-IF config
+(`page0:0x08=0x4D`) to the RTL2832U demod. If that demod is actually
+connected to an FC0012 tuner (due to device slot reuse during open/close
+cycles), it overwrites the FC0012's Zero-IF register (should be `0xCD`),
+making the FC0012 completely deaf. Three independent fixes ensure correct
+mode regardless of device open order:
+
+- **`sdrgg_core.cpp`**: re-assert dual I+Q ADC mode (`page0:0x08=0xCD`,
+  `page1:0xB1=0x1B`) for FC0012/FC0013 devices immediately before USB
+  bulk streaming starts, in `start_stream_legacy()`
+- **`sdrgg_fc0012.cpp`**: re-assert Zero-IF dual-ADC mode before every
+  `set_freq()` call (`page1:0xB1=0x1B`, `page0:0x08=0xCD`,
+  `page1:0x15=0x00`), ensuring correct config even if another device
+  was opened between tunes
+- **`sdrgg_rtl.cpp`**: guard `rtl::configure_r820t()` to only apply R820T
+  Low-IF config to actual R820T/R820T2 devices. Non-R820T devices now
+  return `SDRGG_OK` immediately without touching demod registers.
+
+### Version
+
+- `sdrgg.h` version bumped to 1.4.1
+- `Makefile` version bumped to 1.4.1
+
 ## v1.4.0 — 2026-09-21
 
 ### Multi-consumer IQ ring buffer engine

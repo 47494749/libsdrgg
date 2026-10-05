@@ -179,7 +179,7 @@ make SDRGG_ENABLE_DIAGNOSTICS=1
 
 ## Build Outputs
 
-- `libsdrgg.so -> libsdrgg.so.1 -> libsdrgg.so.1.4.0`
+- `libsdrgg.so -> libsdrgg.so.1 -> libsdrgg.so.1.4.1`
 - `libsdrgg.a` via `make static`
 - `examples/enumerate_devices`
 - `examples/show_capabilities`
