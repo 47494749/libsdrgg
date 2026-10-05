@@ -704,6 +704,15 @@ int32_t rtl::init( sdrgg_dev_t *dev ) {
 
 /* R820T-specific IF mode activation */
 int32_t rtl::configure_r820t( sdrgg_dev_t *dev ) {
+  /* Guard: only apply R820T IF mode to R820T devices.
+   * In multi-device setups, this function can be called on an FC0012
+   * device due to slot reuse during open/close cycles. Writing Low-IF
+   * config (0x4D) to an FC0012 demod kills its Zero-IF reception. */
+  if( dev->identity.tuner_class != SDRGG_TUNER_R820T &&
+      dev->identity.tuner_class != SDRGG_TUNER_R820T2 ) {
+    return SDRGG_OK;
+  }
+
   desc_sequence phase_spec;
   spec_r820t_if_mode( &phase_spec );
 

@@ -537,6 +537,15 @@ int32_t init( sdrgg_dev_t *dev ) {
 
 /* Tuning: create and execute a tuning session */
 int32_t set_freq( sdrgg_dev_t *dev, uint32_t freq_hz ) {
+  /* Re-assert Zero-IF dual-ADC mode for FC0012.
+   * In multi-device configurations, a later R820T open can overwrite
+   * this device's demod registers with Low-IF/single-ADC values,
+   * making the FC0012 deaf. Re-writing these before every tune
+   * ensures correct mode regardless of device open order. */
+  demod::write( dev, 1, 0xB1, 0x1B );   /* Zero-IF + DC cancel */
+  demod::write( dev, 0, 0x08, 0xCD );   /* Dual I+Q ADC */
+  demod::write( dev, 1, 0x15, 0x00 );   /* No spectrum inversion */
+
   /* Band selection via GPIO */
   rtl::set_gpio_bit( dev, 6, ( freq_hz > BAND_SPLIT_HZ ) ? 1 : 0 );
 

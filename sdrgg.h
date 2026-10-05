@@ -20,7 +20,7 @@
 
 /* ---- Library version ---- */
 #define SDRGG_VERSION_MAJOR  1
-#define SDRGG_VERSION_MINOR  3
+#define SDRGG_VERSION_MINOR  4
 #define SDRGG_VERSION_PATCH  1
 
 #include <stdint.h>

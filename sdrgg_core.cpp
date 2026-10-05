@@ -681,6 +681,17 @@ int32_t start_stream_legacy( sdrgg_dev_t *dev, const sdrgg_stream_cfg_t *cfg, sd
   }
 #endif
 
+  /* FC0012 demod fixup: re-assert dual I+Q ADC mode (page0:0x08 = 0xCD).
+   * In multi-device setups, opening an R820T device can overwrite the
+   * FC0012's demod register with the R820T Low-IF value (0x4D), leaving
+   * the FC0012 deaf. Re-writing 0xCD here ensures correct mode before
+   * streaming starts, regardless of open/close ordering. */
+  if( dev->identity.tuner_class == SDRGG_TUNER_FC0012 ||
+      dev->identity.tuner_class == SDRGG_TUNER_FC0013 ) {
+    demod::write( dev, 0, 0x08, 0xCD );
+    demod::write( dev, 1, 0xB1, 0x1B );
+  }
+
   /* Reset endpoint and begin data flow */
   rc = rtl::start_bulk( dev );
   if( rc != SDRGG_OK ) {
